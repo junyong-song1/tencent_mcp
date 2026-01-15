@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(brew install:*)",
+      "Bash(composer install:*)",
+      "Bash(php:*)",
+      "Bash(rm:*)",
+      "Bash(ls:*)",
+      "Bash(chmod:*)",
+      "Bash(python cli.py:*)",
+      "Bash(python -m py_compile:*)",
+      "Bash(python3:*)",
+      "Bash(python app_v2.py:*)",
+      "Bash(pip install:*)",
+      "Bash(cat:*)",
+      "Bash(pkill:*)",
+      "Bash(pgrep:*)",
+      "Bash(python -m pytest tests/ -v --tb=short)",
+      "Bash(grep:*)",
+      "Bash(wc:*)",
+      "Bash(pip3 install:*)",
+      "Bash(uvicorn:*)",
+      "Bash(curl:*)",
+      "Bash(./scripts/restart.sh:*)",
+      "Bash(source:*)"
+    ]
+  }
+}

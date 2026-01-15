@@ -1,0 +1,66 @@
+# Environment
+.env
+.env.local
+.env.*.local
+venv/
+env/
+ENV/
+.venv
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PHP / Composer
+/vendor/
+composer.lock
+.phpunit.result.cache
+phpunit.xml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temp/Cache
+tmp/
+temp/
+.cache/
+*.cache
+
+# Data files (JSON storage)
+data/*.json
+!data/.gitkeep

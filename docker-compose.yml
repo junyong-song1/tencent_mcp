@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  tencent-mcp-bot:
+    build: .
+    container_name: tencent-mcp-slack-bot
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+    environment:
+      - TZ=Asia/Seoul
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

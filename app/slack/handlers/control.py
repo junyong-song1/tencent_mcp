@@ -1,0 +1,490 @@
+"""Control action handlers (start/stop/restart)."""
+import json
+import logging
+import re
+import threading
+
+from slack_bolt import App
+
+from app.slack.ui.dashboard import DashboardUI
+
+logger = logging.getLogger(__name__)
+
+
+def register(app: App, services):
+    """Register control action handlers."""
+
+    def extract_modal_filter_state(view: dict) -> dict:
+        """Extract filter state from modal view."""
+        filters = view.get("state", {}).get("values", {}).get("dashboard_filters", {})
+        search_block = view.get("state", {}).get("values", {}).get("search_block", {})
+
+        private_metadata = view.get("private_metadata", "")
+        channel_id = ""
+        page = 0
+
+        try:
+            metadata = json.loads(private_metadata)
+            channel_id = metadata.get("channel_id", "")
+            page = metadata.get("page", 0)
+        except (json.JSONDecodeError, TypeError):
+            channel_id = private_metadata
+
+        service_filter = "all"
+        status_filter = "all"
+        keyword = ""
+
+        if "dashboard_filter_service" in filters:
+            selected = filters["dashboard_filter_service"].get("selected_option")
+            if selected:
+                service_filter = selected.get("value", "all")
+
+        if "dashboard_filter_status" in filters:
+            selected = filters["dashboard_filter_status"].get("selected_option")
+            if selected:
+                status_filter = selected.get("value", "all")
+
+        if "dashboard_search_input" in search_block:
+            keyword = search_block["dashboard_search_input"].get("value") or ""
+
+        return {
+            "view_id": view.get("id"),
+            "channel_id": channel_id,
+            "service_filter": service_filter,
+            "status_filter": status_filter,
+            "keyword": keyword,
+            "page": page,
+        }
+
+    def async_update_modal(client, state, clear_cache=False):
+        """Update modal asynchronously."""
+        def _update():
+            try:
+                if clear_cache:
+                    services.tencent_client.clear_cache()
+
+                channels = services.tencent_client.list_all_resources()
+                modal_view = DashboardUI.create_dashboard_modal(
+                    channels=channels,
+                    service_filter=state["service_filter"],
+                    status_filter=state["status_filter"],
+                    keyword=state["keyword"],
+                    channel_id=state["channel_id"],
+                    page=state["page"],
+                )
+                client.views_update(view_id=state["view_id"], view=modal_view)
+            except Exception as e:
+                logger.error(f"Async modal update failed: {e}")
+
+        threading.Thread(target=_update, daemon=True).start()
+
+    @app.action(re.compile(r"resource_menu_.*"))
+    def handle_resource_menu(ack, body, client, logger):
+        """Handle resource overflow menu actions."""
+        ack()
+
+        action = body["actions"][0]
+        selected_value = action["selected_option"]["value"]
+
+        # Parse action:service:resource_id
+        parts = selected_value.split(":")
+        if len(parts) < 3:
+            logger.error(f"Invalid menu value: {selected_value}")
+            return
+
+        action_type = parts[0]
+        service_type = parts[1]
+        resource_id = ":".join(parts[2:])
+
+        view = body["view"]
+        state = extract_modal_filter_state(view)
+        channel_id = state["channel_id"]
+        user_id = body["user"]["id"]
+
+        if action_type == "info":
+            details = services.tencent_client.get_resource_details(resource_id, service_type)
+            if details:
+                text = (
+                    f"*{details.get('name', 'Unknown')}*\n"
+                    f"ID: `{details.get('id', '')}`\n"
+                    f"서비스: {details.get('service', '')}\n"
+                    f"상태: {details.get('status', 'unknown')}"
+                )
+            else:
+                text = "리소스 정보를 가져올 수 없습니다."
+
+            client.chat_postEphemeral(
+                channel=channel_id or body.get("channel", {}).get("id", ""),
+                user=user_id,
+                text=text,
+            )
+            return
+
+        # Handle integrated control (start_all, stop_all)
+        is_integrated = action_type in ["start_all", "stop_all"]
+        base_action = action_type.replace("_all", "")  # start_all -> start
+
+        # Get all resources and find the parent + children
+        all_resources = services.tencent_client.list_all_resources()
+        parent_resource = None
+        linked_children = []
+
+        for res in all_resources:
+            if res.get("id") == resource_id:
+                parent_resource = res
+                break
+
+        resource_name = parent_resource.get("name", resource_id) if parent_resource else resource_id
+
+        # Find linked children if integrated action
+        if is_integrated and parent_resource:
+            from app.services.linkage import group_and_filter_resources
+            hierarchy = group_and_filter_resources(all_resources, "all", "all", "")
+            for group in hierarchy:
+                if group["parent"].get("id") == resource_id:
+                    linked_children = group["children"]
+                    break
+
+        # Send initial message
+        if channel_id:
+            if is_integrated and linked_children:
+                child_names = ", ".join([c.get("name", c.get("id", ""))[:20] for c in linked_children[:3]])
+                if len(linked_children) > 3:
+                    child_names += f" 외 {len(linked_children) - 3}개"
+                client.chat_postMessage(
+                    channel=channel_id,
+                    text=f"<@{user_id}> requested *통합 {base_action.upper()}* on `{resource_name}` + {len(linked_children)} linked resources ({child_names})...",
+                )
+            else:
+                client.chat_postMessage(
+                    channel=channel_id,
+                    text=f"<@{user_id}> requested *{base_action.upper()}* on `{resource_name}` (`{resource_id}`)...",
+                )
+
+        # Execute control on parent
+        result = services.tencent_client.control_resource(resource_id, service_type, base_action)
+        success = result.get("success", False)
+        message = result.get("message", "Unknown error")
+
+        result_icon = ":white_check_mark:" if success else ":x:"
+        results_summary = [f"{result_icon} `{resource_name}`: {message}"]
+
+        # Execute on children if integrated
+        if is_integrated and linked_children:
+            for child in linked_children:
+                child_id = child.get("id", "")
+                child_service = child.get("service", "")
+                child_name = child.get("name", child_id)
+
+                child_result = services.tencent_client.control_resource(child_id, child_service, base_action)
+                child_success = child_result.get("success", False)
+                child_msg = child_result.get("message", "Unknown")
+                child_icon = ":white_check_mark:" if child_success else ":x:"
+                results_summary.append(f"{child_icon} `{child_name}`: {child_msg}")
+
+        # Send result message
+        if channel_id:
+            if is_integrated and linked_children:
+                client.chat_postMessage(
+                    channel=channel_id,
+                    text=f"*통합 {base_action.upper()}* 결과:\n" + "\n".join(results_summary),
+                )
+            else:
+                client.chat_postMessage(
+                    channel=channel_id,
+                    text=f"{result_icon} *{base_action.upper()}* `{resource_name}`: {message}",
+                )
+
+        async_update_modal(client, state, clear_cache=True)
+
+    @app.action(re.compile(r"parent_(start|stop|info)_.*"))
+    def handle_parent_control(ack, body, client, logger):
+        """Handle parent resource individual control buttons."""
+        ack()
+
+        action_data = body["actions"][0]
+        action_id = action_data["action_id"]
+        value = action_data.get("value", "")
+
+        view = body["view"]
+        state = extract_modal_filter_state(view)
+        channel_id = state["channel_id"]
+        user_id = body["user"]["id"]
+
+        # Parse action_id: parent_start_RESOURCEID
+        parts = action_id.split("_")
+        action_type = parts[1]  # start, stop, or info
+
+        # Parse value: service:resource_id
+        service_type = ""
+        resource_id = ""
+        if ":" in value:
+            value_parts = value.split(":")
+            service_type = value_parts[0]
+            resource_id = ":".join(value_parts[1:])
+
+        # Get resource name
+        resource_name = resource_id
+        try:
+            details = services.tencent_client.get_resource_details(resource_id, service_type)
+            if details and details.get("name"):
+                resource_name = details["name"]
+        except Exception:
+            pass
+
+        if action_type == "info":
+            details = services.tencent_client.get_resource_details(resource_id, service_type)
+            if details:
+                text = (
+                    f"*{details.get('name', 'Unknown')}*\n"
+                    f"ID: `{details.get('id', '')}`\n"
+                    f"서비스: {details.get('service', '')}\n"
+                    f"상태: {details.get('status', 'unknown')}"
+                )
+            else:
+                text = "리소스 정보를 가져올 수 없습니다."
+
+            client.chat_postEphemeral(
+                channel=channel_id or body.get("channel", {}).get("id", ""),
+                user=user_id,
+                text=text,
+            )
+            return
+
+        # Start/Stop action
+        if channel_id:
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f"<@{user_id}> requested *{action_type.upper()}* on `{resource_name}`...",
+            )
+
+        result = services.tencent_client.control_resource(resource_id, service_type, action_type)
+        success = result.get("success", False)
+        message = result.get("message", "Unknown error")
+
+        result_icon = ":white_check_mark:" if success else ":x:"
+        if channel_id:
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f"{result_icon} *{action_type.upper()}* `{resource_name}`: {message}",
+            )
+
+        async_update_modal(client, state, clear_cache=True)
+
+    @app.action(re.compile(r"integrated_(start|stop)_.*"))
+    def handle_integrated_control(ack, body, client, logger):
+        """Handle integrated start/stop buttons."""
+        ack()
+
+        action_data = body["actions"][0]
+        action_id = action_data["action_id"]
+        value = action_data.get("value", "")
+
+        view = body["view"]
+        state = extract_modal_filter_state(view)
+        channel_id = state["channel_id"]
+        user_id = body["user"]["id"]
+
+        # Parse action_id: integrated_start_RESOURCEID
+        parts = action_id.split("_")
+        action_type = parts[1]  # start or stop
+
+        # Parse value: service:resource_id
+        service_type = ""
+        resource_id = ""
+        if ":" in value:
+            value_parts = value.split(":")
+            service_type = value_parts[0]
+            resource_id = ":".join(value_parts[1:])
+
+        # Get all resources and find the parent + children
+        all_resources = services.tencent_client.list_all_resources()
+        parent_resource = None
+        linked_children = []
+
+        for res in all_resources:
+            if res.get("id") == resource_id:
+                parent_resource = res
+                break
+
+        resource_name = parent_resource.get("name", resource_id) if parent_resource else resource_id
+
+        # Find linked children
+        from app.services.linkage import group_and_filter_resources
+        hierarchy = group_and_filter_resources(all_resources, "all", "all", "")
+        for group in hierarchy:
+            if group["parent"].get("id") == resource_id:
+                linked_children = group["children"]
+                break
+
+        # Send initial message
+        if channel_id:
+            child_names = ", ".join([c.get("name", c.get("id", ""))[:20] for c in linked_children[:3]])
+            if len(linked_children) > 3:
+                child_names += f" 외 {len(linked_children) - 3}개"
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f"<@{user_id}> requested *통합 {action_type.upper()}* on `{resource_name}` + {len(linked_children)} linked resources ({child_names})...",
+            )
+
+        # Execute control on parent
+        result = services.tencent_client.control_resource(resource_id, service_type, action_type)
+        success = result.get("success", False)
+        message = result.get("message", "Unknown error")
+
+        result_icon = ":white_check_mark:" if success else ":x:"
+        results_summary = [f"{result_icon} `{resource_name}`: {message}"]
+
+        # Execute on children
+        for child in linked_children:
+            child_id = child.get("id", "")
+            child_service = child.get("service", "")
+            child_name = child.get("name", child_id)
+
+            child_result = services.tencent_client.control_resource(child_id, child_service, action_type)
+            child_success = child_result.get("success", False)
+            child_msg = child_result.get("message", "Unknown")
+            child_icon = ":white_check_mark:" if child_success else ":x:"
+            results_summary.append(f"{child_icon} `{child_name}`: {child_msg}")
+
+        # Send result message
+        if channel_id:
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f"*통합 {action_type.upper()}* 결과:\n" + "\n".join(results_summary),
+            )
+
+        async_update_modal(client, state, clear_cache=True)
+
+    @app.action(re.compile(r"child_(start|stop|info)_.*"))
+    def handle_child_control(ack, body, client, logger):
+        """Handle child resource control buttons."""
+        ack()
+
+        action_data = body["actions"][0]
+        action_id = action_data["action_id"]
+        value = action_data.get("value", "")
+
+        view = body["view"]
+        state = extract_modal_filter_state(view)
+        channel_id = state["channel_id"]
+        user_id = body["user"]["id"]
+
+        # Parse action_id: child_start_RESOURCEID or child_stop_RESOURCEID
+        parts = action_id.split("_")
+        action_type = parts[1]  # start, stop, or info
+
+        # Parse value: service:resource_id
+        service_type = ""
+        resource_id = ""
+        if ":" in value:
+            value_parts = value.split(":")
+            service_type = value_parts[0]
+            resource_id = ":".join(value_parts[1:])
+
+        # Get resource name
+        resource_name = resource_id
+        try:
+            details = services.tencent_client.get_resource_details(resource_id, service_type)
+            if details and details.get("name"):
+                resource_name = details["name"]
+        except Exception:
+            pass
+
+        if action_type == "info":
+            details = services.tencent_client.get_resource_details(resource_id, service_type)
+            if details:
+                text = (
+                    f"*{details.get('name', 'Unknown')}*\n"
+                    f"ID: `{details.get('id', '')}`\n"
+                    f"서비스: {details.get('service', '')}\n"
+                    f"상태: {details.get('status', 'unknown')}"
+                )
+            else:
+                text = "리소스 정보를 가져올 수 없습니다."
+
+            client.chat_postEphemeral(
+                channel=channel_id or body.get("channel", {}).get("id", ""),
+                user=user_id,
+                text=text,
+            )
+            return
+
+        # Start/Stop action
+        if channel_id:
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f"<@{user_id}> requested *{action_type.upper()}* on `{resource_name}`...",
+            )
+
+        result = services.tencent_client.control_resource(resource_id, service_type, action_type)
+        success = result.get("success", False)
+        message = result.get("message", "Unknown error")
+
+        result_icon = ":white_check_mark:" if success else ":x:"
+        if channel_id:
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f"{result_icon} *{action_type.upper()}* `{resource_name}`: {message}",
+            )
+
+        async_update_modal(client, state, clear_cache=True)
+
+    @app.action(re.compile(r"(start|stop|restart)_.*"))
+    def handle_control_action(ack, body, client, logger):
+        """Handle direct control buttons."""
+        ack()
+
+        action_data = body["actions"][0]
+        action_id = action_data["action_id"]
+        value = action_data.get("value", "")
+
+        view = body["view"]
+        state = extract_modal_filter_state(view)
+        channel_id = state["channel_id"]
+        user_id = body["user"]["id"]
+
+        action_type = action_id.split("_")[0]
+        target_id = "_".join(action_id.split("_")[1:])
+
+        service_type = None
+        if ":" in value:
+            parts = value.split(":")
+            if len(parts) >= 2:
+                service_type = parts[0]
+                target_id = ":".join(parts[1:])
+
+        resource_name = target_id
+        try:
+            if service_type:
+                details = services.tencent_client.get_resource_details(target_id, service_type)
+                if details and details.get("name"):
+                    resource_name = details["name"]
+            else:
+                all_resources = services.tencent_client.list_all_resources()
+                for res in all_resources:
+                    if res.get("id") == target_id:
+                        resource_name = res.get("name", target_id)
+                        service_type = res.get("service")
+                        break
+        except Exception:
+            pass
+
+        if channel_id:
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f"<@{user_id}> requested *{action_type.upper()}* on `{resource_name}`...",
+            )
+
+        result = services.tencent_client.control_resource(target_id, service_type or "", action_type)
+        success = result.get("success", False)
+        message = result.get("message", "Unknown error")
+
+        result_icon = ":white_check_mark:" if success else ":x:"
+        if channel_id:
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f"{result_icon} *{action_type.upper()}* `{resource_name}`: {message}",
+            )
+
+        async_update_modal(client, state, clear_cache=True)

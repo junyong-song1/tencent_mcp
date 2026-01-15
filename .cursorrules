@@ -1,0 +1,260 @@
+# Tencent MCP Slack Bot - Cursor Rules
+
+## Project Overview
+
+This is a Slack Bot for managing Tencent Cloud StreamLive (MDL) and StreamLink (MDC) resources. The bot provides an interactive modal dashboard for searching, filtering, and controlling media streaming channels through Slack commands and UI interactions.
+
+**Key Technologies:**
+- Python 3.8+
+- Slack Bolt Framework (Socket Mode)
+- Tencent Cloud SDK (Common Client for MDL/MDC)
+- ThreadPoolExecutor for parallel API calls
+- In-memory caching with TTL
+
+## Architecture & Module Structure
+
+### Core Modules
+
+1. **app_v2.py** - Main entry point
+   - Registers Slack event handlers (`/tencent` command, `app_mention`, block actions)
+   - Uses Socket Mode (WebSocket) for real-time events
+   - Handles modal interactions and button clicks
+   - Fast-path commands (`list`, `stats`, `help`) bypass command_agent for speed
+
+2. **tencent_cloud_client.py** - Tencent Cloud SDK wrapper
+   - Thread-safe: Creates per-request SDK clients using `_get_mdl_client()`, `_get_mdc_client()`
+   - Uses Common Client for MDL (StreamLive) and MDC (StreamLink) services
+   - Implements 120s TTL caching with `threading.Lock` protection
+   - Parallel fetching with `ThreadPoolExecutor(max_workers=10)`
+   - Key methods: `list_all_resources()`, `control_resource()`, `get_resource_details()`
+
+3. **slack_ui.py** - Slack Block Kit UI components
+   - Generates modals, buttons, status displays
+   - Handles pagination (25 items per page, 100 block limit)
+   - Resource hierarchy display (parent-child relationships)
+   - Compact 2-column layout with context blocks
+
+4. **linkage_service.py** - Resource linkage logic
+   - Matches StreamLink output URLs to StreamLive input endpoints
+   - Builds resource hierarchy (StreamLive as parent, StreamLink as children)
+   - Filters resources by keyword, status, service type
+
+5. **command_agent.py** - Keyword-based command parser
+   - Natural language processing (Korean/English)
+   - Detects intent: search, status, help
+   - No direct control commands (users must use UI buttons)
+
+6. **config.py** - Configuration management
+   - Loads environment variables from `.env`
+   - Validates required credentials on startup
+   - Performance tuning parameters (CACHE_TTL_SECONDS, THREAD_POOL_WORKERS, etc.)
+
+## Coding Standards
+
+### General Principles
+
+1. **Thread Safety**
+   - Always use `_get_mdl_client()` and `_get_mdc_client()` for SDK clients (never store as instance variables)
+   - Protect cache access with `_cache_lock` when reading/writing
+   - Use `ThreadPoolExecutor` for parallel API calls
+
+2. **Error Handling**
+   - Always wrap Tencent Cloud API calls in try/except blocks
+   - Log errors with context: `logger.error(f"Failed to {action}: {e}", exc_info=True)`
+   - Provide user-friendly error messages in Slack
+   - Never let exceptions crash the bot
+
+3. **Caching Strategy**
+   - Cache TTL: 120 seconds (configurable via `CACHE_TTL_SECONDS`)
+   - Clear cache after control operations (start/stop/restart)
+   - Use `tencent_client.clear_cache()` when fresh data is needed
+
+4. **Slack UI Constraints**
+   - Modal block limit: 100 blocks
+   - Message block limit: 50 blocks
+   - Pagination: 25 items per page for modals
+   - Always use `ack()` immediately in action handlers
+
+### Code Style
+
+- **Type Hints**: Use type hints for function parameters and return values
+- **Docstrings**: Include docstrings for all public functions and classes
+- **Logging**: Use appropriate log levels (DEBUG, INFO, WARNING, ERROR)
+- **Naming**: 
+  - Functions: `snake_case`
+  - Classes: `PascalCase`
+  - Constants: `UPPER_SNAKE_CASE`
+
+### Resource Naming
+
+- **StreamLive**: Use "StreamLive" in user-facing messages (not "MediaLive")
+- **StreamLink**: Use "StreamLink" in user-facing messages (not "MediaConnect")
+- **Service Types**: Use "StreamLive" and "StreamLink" consistently
+
+## Development Guidelines
+
+### Adding New Features
+
+1. **New Slack Commands**
+   - Add handler in `app_v2.py` with `@app.command()` or `@app.action()`
+   - Always call `ack()` immediately
+   - Use `async_update_modal()` for modal updates with error handling
+   - Clear cache if fetching fresh data: `clear_cache=True`
+
+2. **New Tencent Cloud Operations**
+   - Add method to `tencent_cloud_client.py`
+   - Use thread-safe client creation: `client = self._get_mdl_client()` or `self._get_mdc_client()`
+   - Handle `TencentCloudSDKException` and general `Exception`
+   - Return structured dict: `{"success": bool, "message": str, ...}`
+
+3. **UI Components**
+   - Add to `slack_ui.py` as static methods
+   - Follow Slack Block Kit best practices
+   - Respect block limits (100 for modals, 50 for messages)
+   - Use pagination for large lists
+
+4. **Resource Linkage**
+   - Modify `linkage_service.py` for new matching logic
+   - Update `LinkageMatcher.is_url_match()` for new URL matching strategies
+   - Test with actual StreamLink → StreamLive connections
+
+### Common Patterns
+
+1. **Modal State Management**
+   ```python
+   state = extract_modal_filter_state(view)
+   # state contains: channel_id, service_filter, status_filter, keyword, page
+   ```
+
+2. **Resource Control Flow**
+   ```python
+   # Get resource name for notifications
+   resource_name = get_resource_name(target_id, service_type)
+   
+   # Control resource
+   result = tencent_client.control_resource(target_id, service_type, action_type)
+   
+   # Clear cache and refresh modal
+   async_update_modal(client, view_id, channel_id, ..., clear_cache=True)
+   ```
+
+3. **Error Handling Pattern**
+   ```python
+   try:
+       # Operation
+       result = tencent_client.some_operation()
+   except TencentCloudSDKException as e:
+       logger.error(f"Tencent Cloud error: {e}")
+       return {"success": False, "message": str(e)}
+   except Exception as e:
+       logger.error(f"Unexpected error: {e}", exc_info=True)
+       return {"success": False, "message": "Internal error occurred"}
+   ```
+
+## Testing
+
+- Write tests in `tests/` directory
+- Use pytest for test framework
+- Mock Tencent Cloud SDK responses
+- Test error handling paths
+- Run tests: `pytest tests/`
+
+## Performance Considerations
+
+1. **API Calls**
+   - Use parallel fetching with `ThreadPoolExecutor`
+   - Cache responses with appropriate TTL
+   - Clear cache only when necessary (after control operations)
+
+2. **Slack API**
+   - Use `ack()` immediately to acknowledge actions
+   - Use async updates for long-running operations
+   - Batch operations when possible
+
+3. **Memory**
+   - Cache has TTL to prevent unbounded growth
+   - Clear cache periodically or after operations
+
+## Environment Variables
+
+Required:
+- `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_SIGNING_SECRET`
+- `TENCENT_SECRET_ID`, `TENCENT_SECRET_KEY`, `TENCENT_REGION`
+
+Optional (Performance Tuning):
+- `CACHE_TTL_SECONDS` (default: 120)
+- `THREAD_POOL_WORKERS` (default: 10)
+- `API_REQUEST_TIMEOUT` (default: 20)
+- `MAX_PARENT_GROUPS` (default: 30)
+
+## Important Constraints
+
+1. **No Direct Text Commands for Control**
+   - Users must use UI buttons for start/stop/restart
+   - Text commands only support search, status, help
+
+2. **Slack Block Limits**
+   - Modals: 100 blocks maximum
+   - Messages: 50 blocks maximum
+   - Always implement pagination for large lists
+
+3. **Thread Safety**
+   - Never store SDK clients as instance variables
+   - Always create new clients per request
+   - Use locks for shared cache access
+
+4. **Resource Linkage**
+   - StreamLink flows feed into StreamLive channels
+   - Matching based on output URLs → input endpoints
+   - Display hierarchy: StreamLive (parent) → StreamLink (children)
+
+## When Making Changes
+
+1. **Before modifying code:**
+   - Understand the existing architecture
+   - Check for similar patterns in the codebase
+   - Consider thread safety implications
+
+2. **When adding features:**
+   - Follow existing patterns
+   - Update documentation if needed
+   - Add error handling
+   - Consider performance impact
+
+3. **When fixing bugs:**
+   - Check logs first (`app.log`)
+   - Reproduce the issue
+   - Fix root cause, not symptoms
+   - Test thoroughly
+
+## Code Review Checklist
+
+- [ ] Thread-safe SDK client usage
+- [ ] Proper error handling with logging
+- [ ] Cache cleared when needed
+- [ ] Slack block limits respected
+- [ ] User-friendly error messages
+- [ ] Resource names displayed in notifications
+- [ ] Type hints and docstrings added
+- [ ] No hardcoded values (use config.py)
+
+## Common Pitfalls to Avoid
+
+1. ❌ Storing SDK clients as instance variables
+2. ❌ Forgetting to call `ack()` in action handlers
+3. ❌ Not clearing cache after control operations
+4. ❌ Exceeding Slack block limits
+5. ❌ Not handling nested JSON in `private_metadata`
+6. ❌ Using "MediaLive" instead of "StreamLive" in user messages
+7. ❌ Not providing resource names in notifications
+
+## Best Practices
+
+1. ✅ Always use thread-safe client creation
+2. ✅ Clear cache after control operations
+3. ✅ Use async updates for long operations
+4. ✅ Provide resource names in notifications
+5. ✅ Implement pagination for large lists
+6. ✅ Log errors with full context
+7. ✅ Test with actual Tencent Cloud resources
+8. ✅ Follow existing code patterns
