@@ -272,12 +272,200 @@ class ScheduleUI:
         }
 
     @classmethod
+    def create_schedule_edit_modal(
+        cls,
+        schedule: Dict,
+        channels: List[Dict],
+        parent_metadata: str,
+    ) -> dict:
+        """Create the edit schedule modal."""
+        channel_options = [
+            {
+                "text": {"type": "plain_text", "text": ch.get("name", ch.get("id", ""))[:75]},
+                "value": f"{ch.get('service', '')}:{ch.get('id', '')}",
+            }
+            for ch in channels[:100]
+        ]
+
+        if not channel_options:
+            channel_options = [
+                {"text": {"type": "plain_text", "text": "채널 없음"}, "value": "none:none"}
+            ]
+
+        # Find initial channel option
+        current_channel_value = f"{schedule.get('service', '')}:{schedule.get('channel_id', '')}"
+        initial_channel = None
+        for opt in channel_options:
+            if opt["value"] == current_channel_value:
+                initial_channel = opt
+                break
+        if not initial_channel:
+            initial_channel = channel_options[0]
+
+        # Parse datetime
+        try:
+            start_dt = datetime.fromisoformat(schedule.get("start_time_iso", ""))
+            end_dt = datetime.fromisoformat(schedule.get("end_time_iso", ""))
+            start_date = start_dt.strftime("%Y-%m-%d")
+            start_time = start_dt.strftime("%H:%M")
+            end_date = end_dt.strftime("%Y-%m-%d")
+            end_time = end_dt.strftime("%H:%M")
+        except Exception:
+            start_date = datetime.now().strftime("%Y-%m-%d")
+            start_time = "09:00"
+            end_date = start_date
+            end_time = "18:00"
+
+        # Build initial options for checkboxes
+        initial_options = []
+        if schedule.get("notify_2h", False):
+            initial_options.append({
+                "text": {"type": "plain_text", "text": "2시간 전 알림"},
+                "value": "notify_2h",
+            })
+        if schedule.get("notify_30m", False):
+            initial_options.append({
+                "text": {"type": "plain_text", "text": "30분 전 알림"},
+                "value": "notify_30m",
+            })
+
+        # Include schedule_id in metadata
+        import json
+        try:
+            meta = json.loads(parent_metadata)
+        except (json.JSONDecodeError, TypeError):
+            meta = {}
+        meta["schedule_id"] = schedule.get("schedule_id", "")
+        edit_metadata = json.dumps(meta)
+
+        checkbox_element = {
+            "type": "checkboxes",
+            "action_id": "schedule_options_input",
+            "options": [
+                {
+                    "text": {"type": "plain_text", "text": "2시간 전 알림"},
+                    "value": "notify_2h",
+                },
+                {
+                    "text": {"type": "plain_text", "text": "30분 전 알림"},
+                    "value": "notify_30m",
+                },
+            ],
+        }
+        if initial_options:
+            checkbox_element["initial_options"] = initial_options
+
+        return {
+            "type": "modal",
+            "callback_id": "schedule_edit_modal_submit",
+            "private_metadata": edit_metadata,
+            "title": {"type": "plain_text", "text": "스케줄 수정"},
+            "submit": {"type": "plain_text", "text": "저장"},
+            "close": {"type": "plain_text", "text": "취소"},
+            "blocks": [
+                {
+                    "type": "input",
+                    "block_id": "schedule_title_block",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "schedule_title_input",
+                        "initial_value": schedule.get("title", ""),
+                        "placeholder": {"type": "plain_text", "text": "방송 제목 입력"},
+                    },
+                    "label": {"type": "plain_text", "text": "방송 제목"},
+                },
+                {
+                    "type": "input",
+                    "block_id": "schedule_channel_block",
+                    "element": {
+                        "type": "static_select",
+                        "action_id": "schedule_channel_select",
+                        "placeholder": {"type": "plain_text", "text": "채널 선택"},
+                        "options": channel_options,
+                        "initial_option": initial_channel,
+                    },
+                    "label": {"type": "plain_text", "text": "채널"},
+                },
+                {
+                    "type": "input",
+                    "block_id": "schedule_start_date_block",
+                    "element": {
+                        "type": "datepicker",
+                        "action_id": "schedule_start_date_input",
+                        "initial_date": start_date,
+                    },
+                    "label": {"type": "plain_text", "text": "시작 날짜"},
+                },
+                {
+                    "type": "input",
+                    "block_id": "schedule_start_time_block",
+                    "element": {
+                        "type": "timepicker",
+                        "action_id": "schedule_start_time_input",
+                        "initial_time": start_time,
+                    },
+                    "label": {"type": "plain_text", "text": "시작 시간"},
+                },
+                {
+                    "type": "input",
+                    "block_id": "schedule_end_date_block",
+                    "element": {
+                        "type": "datepicker",
+                        "action_id": "schedule_end_date_input",
+                        "initial_date": end_date,
+                    },
+                    "label": {"type": "plain_text", "text": "종료 날짜"},
+                },
+                {
+                    "type": "input",
+                    "block_id": "schedule_end_time_block",
+                    "element": {
+                        "type": "timepicker",
+                        "action_id": "schedule_end_time_input",
+                        "initial_time": end_time,
+                    },
+                    "label": {"type": "plain_text", "text": "종료 시간"},
+                },
+                {
+                    "type": "input",
+                    "block_id": "schedule_assignee_block",
+                    "element": {
+                        "type": "users_select",
+                        "action_id": "schedule_assignee_select",
+                        "initial_user": schedule.get("assignee_id", ""),
+                        "placeholder": {"type": "plain_text", "text": "담당자 선택"},
+                    },
+                    "label": {"type": "plain_text", "text": "담당자"},
+                },
+                {
+                    "type": "input",
+                    "block_id": "schedule_options_block",
+                    "optional": True,
+                    "element": checkbox_element,
+                    "label": {"type": "plain_text", "text": "알림 설정"},
+                },
+                {
+                    "type": "input",
+                    "block_id": "schedule_notes_block",
+                    "optional": True,
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "schedule_notes_input",
+                        "multiline": True,
+                        "initial_value": schedule.get("notes", ""),
+                        "placeholder": {"type": "plain_text", "text": "메모 입력 (선택사항)"},
+                    },
+                    "label": {"type": "plain_text", "text": "메모"},
+                },
+            ],
+        }
+
+    @classmethod
     def _create_tab_buttons(cls, active_tab: str = "schedules") -> dict:
         """Create tab navigation buttons."""
         tabs = [
             ("tab_channels", "채널", active_tab == "channels"),
             ("tab_schedules", "스케줄", active_tab == "schedules"),
-            ("tab_status", "상태", active_tab == "status"),
         ]
 
         elements = []

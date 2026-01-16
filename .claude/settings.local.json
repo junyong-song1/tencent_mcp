@@ -22,7 +22,9 @@
       "Bash(uvicorn:*)",
       "Bash(curl:*)",
       "Bash(./scripts/restart.sh:*)",
-      "Bash(source:*)"
+      "Bash(source:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ]
   }
 }

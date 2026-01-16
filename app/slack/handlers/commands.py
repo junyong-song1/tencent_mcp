@@ -5,6 +5,7 @@ import threading
 from slack_bolt import App
 
 from app.slack.ui.dashboard import DashboardUI
+from app.slack.ui.schedule import ScheduleUI
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,23 @@ def register(app: App, services):
                 logger.error(f"Error opening loading modal: {e}")
                 respond(f"대시보드 로드 중 오류 발생: {str(e)}")
 
+        elif sub_cmd in ["schedule", "일정", "스케줄"]:
+            try:
+                # Get upcoming schedules
+                schedules = services.schedule_manager.get_all_upcoming_schedules()
+
+                modal_view = ScheduleUI.create_schedule_tab_modal(
+                    schedules=schedules,
+                    selected_date=None,  # Show all upcoming
+                    channel_id=channel_id,
+                )
+
+                client.views_open(trigger_id=trigger_id, view=modal_view)
+
+            except Exception as e:
+                logger.error(f"Error opening schedule modal: {e}")
+                respond(f"스케줄 화면 로드 중 오류 발생: {str(e)}")
+
         elif sub_cmd == "help":
             respond(_get_help_text())
 
@@ -95,10 +113,10 @@ def _get_help_text() -> str:
 *사용법:*
 - `/tencent` 또는 `/tencent list` - 대시보드 열기
 - `/tencent list <검색어>` - 채널 검색
+- `/tencent schedule` (또는 `일정`, `스케줄`) - 스케줄 관리 화면 열기
 - `/tencent help` - 도움말 보기
 
 *대시보드 기능:*
 - 채널 탭: StreamLive/StreamLink 리소스 조회 및 제어
-- 스케줄 탭: 방송 스케줄 관리
-- 상태 탭: 전체 시스템 현황
+- 스케줄 탭: 방송 스케줄 관리 (추가/수정/삭제)
 """

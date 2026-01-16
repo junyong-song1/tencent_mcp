@@ -79,7 +79,7 @@ def register(app: App, services):
 
         try:
             metadata = json.loads(parent_metadata)
-            selected_date = metadata.get("selected_date", datetime.now().strftime("%Y-%m-%d"))
+            selected_date = metadata.get("selected_date") or datetime.now().strftime("%Y-%m-%d")
         except (json.JSONDecodeError, TypeError):
             selected_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -225,6 +225,87 @@ def register(app: App, services):
                      f"채널: {channel_name} | 담당자: <@{assignee_id}>",
             )
 
+    @app.view("schedule_edit_modal_submit")
+    def handle_schedule_edit_submit(ack, body, client, view, logger):
+        """Handle schedule edit modal submission."""
+        values = view["state"]["values"]
+
+        # Get schedule_id from metadata
+        try:
+            metadata = json.loads(view.get("private_metadata", "{}"))
+            schedule_id = metadata.get("schedule_id", "")
+            slack_channel_id = metadata.get("channel_id", "")
+        except (json.JSONDecodeError, TypeError):
+            ack(response_action="errors", errors={"schedule_title_block": "메타데이터 오류"})
+            return
+
+        if not schedule_id:
+            ack(response_action="errors", errors={"schedule_title_block": "스케줄 ID를 찾을 수 없습니다."})
+            return
+
+        title = values["schedule_title_block"]["schedule_title_input"]["value"]
+        start_date = values["schedule_start_date_block"]["schedule_start_date_input"]["selected_date"]
+        start_time = values["schedule_start_time_block"]["schedule_start_time_input"]["selected_time"]
+        end_date = values["schedule_end_date_block"]["schedule_end_date_input"]["selected_date"]
+        end_time = values["schedule_end_time_block"]["schedule_end_time_input"]["selected_time"]
+        assignee_id = values["schedule_assignee_block"]["schedule_assignee_select"]["selected_user"]
+
+        # Get assignee name
+        assignee_name = assignee_id
+        try:
+            user_info = client.users_info(user=assignee_id)
+            if user_info["ok"]:
+                assignee_name = user_info["user"].get("real_name") or user_info["user"].get("name", assignee_id)
+        except Exception:
+            pass
+
+        options_block = values.get("schedule_options_block", {}).get("schedule_options_input", {})
+        selected_options = options_block.get("selected_options") or []
+        option_values = [opt["value"] for opt in selected_options]
+
+        notify_2h = "notify_2h" in option_values
+        notify_30m = "notify_30m" in option_values
+
+        notes_block = values.get("schedule_notes_block", {}).get("schedule_notes_input", {})
+        notes = notes_block.get("value") or ""
+
+        try:
+            start_datetime = datetime.strptime(f"{start_date} {start_time}", "%Y-%m-%d %H:%M")
+            end_datetime = datetime.strptime(f"{end_date} {end_time}", "%Y-%m-%d %H:%M")
+        except Exception as e:
+            ack(response_action="errors", errors={"schedule_start_date_block": f"날짜/시간 형식 오류: {e}"})
+            return
+
+        if end_datetime <= start_datetime:
+            ack(response_action="errors", errors={"schedule_end_date_block": "종료 시간은 시작 시간 이후여야 합니다."})
+            return
+
+        result = services.schedule_manager.update_schedule(
+            schedule_id=schedule_id,
+            title=title,
+            start_time=start_datetime,
+            end_time=end_datetime,
+            assignee_id=assignee_id,
+            assignee_name=assignee_name,
+            notify_2h=notify_2h,
+            notify_30m=notify_30m,
+            notes=notes,
+        )
+
+        if not result["success"]:
+            ack(response_action="errors", errors={"schedule_title_block": result.get("error", "수정 실패")})
+            return
+
+        ack()
+
+        if slack_channel_id:
+            client.chat_postMessage(
+                channel=slack_channel_id,
+                text=f"스케줄이 수정되었습니다!\n"
+                     f"*{title}* ({start_datetime.strftime('%Y-%m-%d %H:%M')} ~ {end_datetime.strftime('%H:%M')})\n"
+                     f"담당자: <@{assignee_id}>",
+            )
+
     @app.action(re.compile(r"schedule_menu_.*"))
     def handle_schedule_menu(ack, body, client, logger):
         """Handle schedule overflow menu actions."""
@@ -245,10 +326,10 @@ def register(app: App, services):
         try:
             metadata = json.loads(view.get("private_metadata", "{}"))
             channel_id = metadata.get("channel_id", "")
-            selected_date = metadata.get("selected_date", datetime.now().strftime("%Y-%m-%d"))
+            selected_date = metadata.get("selected_date")  # Can be None for "all upcoming"
         except (json.JSONDecodeError, TypeError):
             channel_id = ""
-            selected_date = datetime.now().strftime("%Y-%m-%d")
+            selected_date = None
 
         if action_type == "delete":
             result = services.schedule_manager.delete_schedule(schedule_id)
@@ -259,11 +340,15 @@ def register(app: App, services):
                     text=f"스케줄이 삭제되었습니다: {result.get('message', schedule_id)}",
                 )
 
-            try:
-                date_obj = datetime.strptime(selected_date, "%Y-%m-%d").date()
-                schedules = services.schedule_manager.get_schedules_for_date(date_obj)
-            except Exception:
-                schedules = []
+            if selected_date:
+                try:
+                    date_obj = datetime.strptime(selected_date, "%Y-%m-%d").date()
+                    schedules = services.schedule_manager.get_schedules_for_date(date_obj)
+                except Exception:
+                    schedules = []
+            else:
+                # Show all upcoming schedules
+                schedules = services.schedule_manager.get_all_upcoming_schedules()
 
             modal_view = ScheduleUI.create_schedule_tab_modal(
                 schedules=schedules,
@@ -274,12 +359,25 @@ def register(app: App, services):
             client.views_update(view_id=view_id, view=modal_view)
 
         elif action_type == "edit":
-            user_id = body["user"]["id"]
-            client.chat_postEphemeral(
-                channel=channel_id or body.get("channel", {}).get("id", ""),
-                user=user_id,
-                text="스케줄 수정 기능은 곧 추가될 예정입니다.",
+            # Get schedule data
+            schedule = services.schedule_manager.get_schedule(schedule_id)
+            if not schedule:
+                logger.error(f"Schedule not found: {schedule_id}")
+                return
+
+            # Get channels for dropdown
+            channels = services.tencent_client.list_all_resources()
+            streamlive_channels = [r for r in channels if r.get("service") == "StreamLive"]
+
+            parent_metadata = view.get("private_metadata", "")
+
+            edit_modal = ScheduleUI.create_schedule_edit_modal(
+                schedule=schedule,
+                channels=streamlive_channels,
+                parent_metadata=parent_metadata,
             )
+
+            client.views_push(trigger_id=body["trigger_id"], view=edit_modal)
 
     # Placeholder handlers for form elements
     @app.action("schedule_channel_select")

@@ -135,7 +135,6 @@ class DashboardUI:
         tabs = [
             ("tab_channels", "채널", active_tab == "channels"),
             ("tab_schedules", "스케줄", active_tab == "schedules"),
-            ("tab_status", "상태", active_tab == "status"),
         ]
 
         elements = []
