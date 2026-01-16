@@ -19,10 +19,8 @@ pydantic-settings==2.1.0
 # HTTP Client for Tencent API
 requests==2.31.0
 
-# Tencent Cloud SDK
-tencentcloud-sdk-python-common>=3.0.1000
-tencentcloud-sdk-python-mdl>=3.0.1000
-tencentcloud-sdk-python-mdc>=3.0.1000
+# Tencent Cloud SDK (full package includes all services)
+tencentcloud-sdk-python>=3.0.1000
 
 # Environment Variables
 python-dotenv==1.0.0
