@@ -30,8 +30,13 @@ wheels/
 *.egg
 
 # PHP / Composer
-/vendor/
 composer.lock
+
+# Allow our vendor folder for SDK modules
+!vendor/
+vendor/*
+!vendor/tencentcloud_mdl_mdc.tar.gz
+!vendor/install_mdl_mdc.sh
 .phpunit.result.cache
 phpunit.xml
 
