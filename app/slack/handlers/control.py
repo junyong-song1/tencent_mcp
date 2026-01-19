@@ -3,12 +3,84 @@ import json
 import logging
 import re
 import threading
+from typing import Dict, Optional
 
 from slack_bolt import App
 
 from app.slack.ui.dashboard import DashboardUI
 
 logger = logging.getLogger(__name__)
+
+
+def _format_input_status_text(input_status: Optional[Dict]) -> str:
+    """Format input status information for display.
+
+    Args:
+        input_status: Result from get_channel_input_status()
+
+    Returns:
+        Formatted text string for Slack message
+    """
+    if not input_status:
+        return ""
+
+    text_parts = []
+    active_input = input_status.get("active_input")
+
+    if active_input:
+        # Main emoji based on active input
+        if active_input == "main":
+            active_emoji = ":large_green_circle:"
+        else:  # backup
+            active_emoji = ":warning:"
+
+        text_parts.append(f"\n\n{active_emoji} *입력 상태*: {active_input.upper()}")
+
+        if input_status.get("active_input_name"):
+            text_parts.append(f" ({input_status.get('active_input_name')})")
+
+        # Show verification sources
+        verification_sources = input_status.get("verification_sources", [])
+        verification_level = input_status.get("verification_level", 0)
+        if verification_sources:
+            sources_str = ", ".join(verification_sources)
+            text_parts.append(f"\n   검증: {sources_str} ({verification_level}단계)")
+
+        # Show log-based detection info (MOST RELIABLE)
+        log_detection = input_status.get("log_based_detection")
+        if log_detection:
+            last_event = log_detection.get("last_event_type")
+            last_time = log_detection.get("last_event_time", "")
+            failover_count = log_detection.get("failover_count", 0)
+
+            if last_event:
+                # Format time (remove seconds for brevity)
+                if last_time and "T" in last_time:
+                    last_time = last_time.replace("T", " ").replace("Z", " UTC")[:19]
+
+                event_emoji = ":arrows_counterclockwise:" if last_event == "PipelineFailover" else ":arrow_right:"
+                text_parts.append(f"\n   {event_emoji} 마지막 이벤트: {last_event}")
+                if last_time:
+                    text_parts.append(f" ({last_time})")
+
+                if failover_count > 0:
+                    text_parts.append(f"\n   :chart_with_upwards_trend: 24h 내 Failover: {failover_count}회")
+
+        # Show StreamPackage verification if available
+        sp_verification = input_status.get("streampackage_verification")
+        if sp_verification and sp_verification.get("active_input"):
+            text_parts.append(f"\n   :package: StreamPackage: {sp_verification.get('active_input', '').upper()}")
+
+        # Show CSS verification if available
+        css_verification = input_status.get("css_verification")
+        if css_verification:
+            stream_flowing = css_verification.get("stream_flowing", False)
+            flow_emoji = ":white_check_mark:" if stream_flowing else ":x:"
+            text_parts.append(f"\n   {flow_emoji} 스트림 상태: {'정상' if stream_flowing else '확인 필요'}")
+    else:
+        text_parts.append(f"\n\n:question: *입력 상태*: {input_status.get('message', '확인 불가')}")
+
+    return "".join(text_parts)
 
 
 def register(app: App, services):
@@ -110,6 +182,11 @@ def register(app: App, services):
                     f"서비스: {details.get('service', '')}\n"
                     f"상태: {details.get('status', 'unknown')}"
                 )
+
+                # For StreamLive channels, also show input status
+                if service_type in ["StreamLive", "MediaLive"]:
+                    input_status = services.tencent_client.get_channel_input_status(resource_id)
+                    text += _format_input_status_text(input_status)
             else:
                 text = "리소스 정보를 가져올 수 없습니다."
 
@@ -241,6 +318,11 @@ def register(app: App, services):
                     f"서비스: {details.get('service', '')}\n"
                     f"상태: {details.get('status', 'unknown')}"
                 )
+
+                # For StreamLive channels, also show input status
+                if service_type in ["StreamLive", "MediaLive"]:
+                    input_status = services.tencent_client.get_channel_input_status(resource_id)
+                    text += _format_input_status_text(input_status)
             else:
                 text = "리소스 정보를 가져올 수 없습니다."
 
@@ -400,6 +482,11 @@ def register(app: App, services):
                     f"서비스: {details.get('service', '')}\n"
                     f"상태: {details.get('status', 'unknown')}"
                 )
+
+                # For StreamLive channels, also show input status
+                if service_type in ["StreamLive", "MediaLive"]:
+                    input_status = services.tencent_client.get_channel_input_status(resource_id)
+                    text += _format_input_status_text(input_status)
             else:
                 text = "리소스 정보를 가져올 수 없습니다."
 

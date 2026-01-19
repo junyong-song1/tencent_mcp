@@ -224,6 +224,9 @@ class DashboardUI:
         status_emoji = get_status_emoji(parent.get("status", "unknown"))
         service_emoji = get_service_emoji(parent.get("service", ""))
 
+        # Note: Input status is checked when user clicks info button, not in list view
+        # to avoid performance issues with multiple API calls
+
         parent_text = (
             f"{status_emoji} {service_emoji} *{parent.get('name', 'Unknown')}*\n"
             f"ID: `{parent.get('id', '')}` | 상태: {parent.get('status', 'unknown')}"

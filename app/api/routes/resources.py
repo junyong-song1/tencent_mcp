@@ -60,6 +60,35 @@ async def control_resource(
     return result
 
 
+@router.get("/{resource_id}/input-status")
+async def get_input_status(
+    resource_id: str,
+    service: str = Query(..., description="Service type (StreamLive, StreamLink)"),
+    client: AsyncTencentClient = Depends(get_async_tencent_client),
+):
+    """Get input status (main/backup) for a StreamLive channel."""
+    if service not in ["StreamLive", "MediaLive"]:
+        return {"error": "Input status is only available for StreamLive channels"}
+    
+    # Use sync client for input status check (not yet async)
+    from app.services.tencent_client import TencentCloudClient
+    from app.config import get_settings
+    
+    settings = get_settings()
+    sync_client = TencentCloudClient(
+        secret_id=settings.TENCENT_SECRET_ID,
+        secret_key=settings.TENCENT_SECRET_KEY,
+        region=settings.TENCENT_REGION,
+    )
+    
+    input_status = sync_client.get_channel_input_status(resource_id)
+    
+    if not input_status:
+        return {"error": "Failed to get input status"}
+    
+    return input_status
+
+
 @router.post("/cache/clear")
 async def clear_cache(
     client: AsyncTencentClient = Depends(get_async_tencent_client),

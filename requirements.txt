@@ -21,6 +21,8 @@ requests==2.31.0
 
 # Tencent Cloud SDK (full package includes all services)
 tencentcloud-sdk-python>=3.0.1000
+# StreamPackage SDK (MSP) for input status verification
+tencentcloud-sdk-python-msp>=3.0.1000
 
 # Environment Variables
 python-dotenv==1.0.0
