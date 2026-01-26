@@ -701,6 +701,8 @@ class TencentCloudClient:
             input_details = []
             primary_input_id = None
             secondary_input_id = None
+            failover_loss_threshold = None
+            failover_recover_behavior = None
             
             for att in attached_inputs:
                 att_id = str(getattr(att, "Id", att)).strip()
@@ -712,6 +714,10 @@ class TencentCloudClient:
                     secondary_id = getattr(failover_settings, "SecondaryInputId", "")
                     if secondary_id:
                         secondary_input_id = str(secondary_id).strip()
+                        if failover_loss_threshold is None:
+                            failover_loss_threshold = getattr(failover_settings, "LossThreshold", None)
+                        if failover_recover_behavior is None:
+                            failover_recover_behavior = getattr(failover_settings, "RecoverBehavior", None)
                 
                 input_details.append({
                     "id": att_id,
@@ -1100,6 +1106,8 @@ class TencentCloudClient:
                 "active_input_id": active_input_id,
                 "primary_input_id": primary_input_id,
                 "secondary_input_id": secondary_input_id,
+                "failover_loss_threshold": failover_loss_threshold,
+                "failover_recover_behavior": failover_recover_behavior,
                 "input_details": input_details,
                 "input_states": input_states,
                 "verification_sources": verification_sources,

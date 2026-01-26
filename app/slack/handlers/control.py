@@ -26,6 +26,17 @@ def _format_input_status_text(input_status: Optional[Dict]) -> str:
 
     text_parts = []
     active_input = input_status.get("active_input")
+    secondary_input_id = input_status.get("secondary_input_id")
+    is_input_source_redundancy = input_status.get("is_input_source_redundancy", False)
+    failover_loss_threshold = input_status.get("failover_loss_threshold")
+    failover_recover_behavior = input_status.get("failover_recover_behavior")
+    active_source_address = input_status.get("active_source_address")
+
+    if active_input and not secondary_input_id and not is_input_source_redundancy:
+        text_parts.append("\n\n:warning: *입력 상태*: 설정 필요")
+        text_parts.append("\n   Failover 설정 없음")
+        text_parts.append("\n   안내: SecondaryInputId 설정 필요")
+        return "".join(text_parts)
 
     if active_input:
         # Main emoji based on active input
@@ -45,6 +56,32 @@ def _format_input_status_text(input_status: Optional[Dict]) -> str:
         if verification_sources:
             sources_str = ", ".join(verification_sources)
             text_parts.append(f"\n   검증: {sources_str} ({verification_level}단계)")
+
+        # Show failover mode summary
+        if is_input_source_redundancy:
+            text_parts.append("\n   구성: Input Source Redundancy")
+        elif secondary_input_id:
+            text_parts.append("\n   구성: Channel-level Failover")
+        else:
+            text_parts.append("\n   구성: Failover 미설정")
+
+        # Show failover policy details when available
+        if failover_loss_threshold is not None or failover_recover_behavior:
+            policy_parts = []
+            if failover_loss_threshold is not None:
+                policy_parts.append(f"LossThreshold {failover_loss_threshold}ms")
+            if failover_recover_behavior:
+                policy_parts.append(f"Recover {failover_recover_behavior}")
+            text_parts.append(f"\n   정책: {' / '.join(policy_parts)}")
+
+        # Show active source address (shortened)
+        if active_source_address:
+            short_addr = (
+                f"{active_source_address[:60]}..."
+                if len(active_source_address) > 60
+                else active_source_address
+            )
+            text_parts.append(f"\n   활성 소스: {short_addr}")
 
         # Show log-based detection info (MOST RELIABLE)
         log_detection = input_status.get("log_based_detection")
