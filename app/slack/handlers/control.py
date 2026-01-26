@@ -111,9 +111,13 @@ def _format_input_status_text(input_status: Optional[Dict]) -> str:
         # Show CSS verification if available
         css_verification = input_status.get("css_verification")
         if css_verification:
-            stream_flowing = css_verification.get("stream_flowing", False)
-            flow_emoji = ":white_check_mark:" if stream_flowing else ":x:"
-            text_parts.append(f"\n   {flow_emoji} 스트림 상태: {'정상' if stream_flowing else '확인 필요'}")
+            stream_flowing = css_verification.get("stream_flowing", None)
+            if stream_flowing is True:
+                text_parts.append("\n   :white_check_mark: 스트림 상태: 정상")
+            elif stream_flowing is False:
+                text_parts.append("\n   :x: 스트림 상태: 확인 필요")
+            else:
+                text_parts.append("\n   :grey_question: 스트림 상태: 확인 불가")
     else:
         text_parts.append(f"\n\n:question: *입력 상태*: {input_status.get('message', '확인 불가')}")
 
