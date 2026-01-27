@@ -41,18 +41,13 @@ def create_detailed_alert_blocks(
     """
     blocks = []
     
-    # Header: App name and status icons
+    # Header: App name only (no accessory image to save space)
     header_text = f"{app_icon} *{app_name}*"
     blocks.append({
         "type": "section",
         "text": {
             "type": "mrkdwn",
             "text": header_text
-        },
-        "accessory": {
-            "type": "image",
-            "image_url": "https://api.slack.com/img/blocks/bkb_template_images/approvalsNewDevice.png",
-            "alt_text": "status"
         }
     })
     
@@ -67,7 +62,7 @@ def create_detailed_alert_blocks(
             }
         })
     
-    # Event time (convert to KST)
+    # Event occurrence time (when the alert happened, not when notification was sent)
     if event_time:
         if isinstance(event_time, datetime):
             # Convert to KST if timezone-aware, otherwise assume UTC
@@ -81,7 +76,7 @@ def create_detailed_alert_blocks(
             "type": "context",
             "elements": [{
                 "type": "mrkdwn",
-                "text": f"*Event Time:* `start: {time_str} (KST)`"
+                "text": f"*발생 시간:* `{time_str} (KST)` _알람이 발생한 시각_"
             }]
         })
     
@@ -333,9 +328,9 @@ def create_channel_alert_blocks(
         }
     ]
     
-    # Footer with service info (KST)
+    # Footer: when this notification was sent (알림 전송 시각)
     now_kst = datetime.now(KST)
-    footer_text = f"Tencent Cloud MCP - {service_type} | {now_kst.strftime('%Y-%m-%d %H:%M')} (KST)"
+    footer_text = f"알림 전송: {now_kst.strftime('%Y-%m-%d %H:%M')} (KST) | {service_type}"
     
     return create_detailed_alert_blocks(
         app_name=f"Tencent Cloud MCP - {service_type}",

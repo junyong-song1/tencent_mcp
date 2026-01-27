@@ -12,6 +12,20 @@ from app.slack.ui.dashboard import DashboardUI
 logger = logging.getLogger(__name__)
 
 
+def _format_input_status_brief(input_status: Optional[Dict]) -> str:
+    """Format input status as brief one-line summary for '상태 확인' view."""
+    if not input_status:
+        return "\n   입력: 확인 불가"
+    active_input = input_status.get("active_input")
+    if active_input:
+        emoji = ":large_green_circle:" if active_input == "main" else ":warning:"
+        return f"\n   입력: {emoji} {active_input.upper()}"
+    msg = input_status.get("message", "")
+    if "설정 필요" in str(msg) or not input_status.get("secondary_input_id"):
+        return "\n   입력: :warning: 설정 필요"
+    return f"\n   입력: {msg or '확인 불가'}"
+
+
 def _format_input_status_text(input_status: Optional[Dict]) -> str:
     """Format input status information for display.
 
@@ -629,93 +643,105 @@ def register(app: App, services):
     # Alert notification button handlers
     @app.action("alert_status_check")
     def handle_alert_status_check(ack, body, client, logger):
-        """Handle '상태 확인' button from alert notifications."""
+        """Handle '상태 확인' button: concise status overview only."""
         ack()
         
         try:
             action = body["actions"][0]
             value = action.get("value", "")
             
-            # Parse value: service:channel_id
-            if ":" in value:
-                parts = value.split(":")
-                service_type = parts[0]
-                channel_id = ":".join(parts[1:])
-                
-                user_id = body["user"]["id"]
-                channel = body.get("channel", {}).get("id", "")
-                
-                # Get channel status
-                details = services.tencent_client.get_resource_details(channel_id, service_type)
-                if details:
-                    text = (
-                        f"*{details.get('name', 'Unknown')} 상태*\n"
-                        f"ID: `{details.get('id', '')}`\n"
-                        f"서비스: {details.get('service', '')}\n"
-                        f"상태: {details.get('status', 'unknown')}"
-                    )
-                    
-                    # For StreamLive channels, also show input status
-                    if service_type in ["StreamLive", "MediaLive"]:
-                        input_status = services.tencent_client.get_channel_input_status(channel_id)
-                        text += _format_input_status_text(input_status)
-                else:
-                    text = f"채널 `{channel_id}` 정보를 가져올 수 없습니다."
-                
-                client.chat_postEphemeral(
-                    channel=channel,
-                    user=user_id,
-                    text=text,
-                )
+            if ":" not in value:
+                return
+            parts = value.split(":")
+            service_type = parts[0]
+            channel_id = ":".join(parts[1:])
+            user_id = body["user"]["id"]
+            channel = body.get("channel", {}).get("id", "")
+            
+            details = services.tencent_client.get_resource_details(channel_id, service_type)
+            if not details:
+                client.chat_postEphemeral(channel=channel, user=user_id, text=f"채널 `{channel_id}` 정보를 가져올 수 없습니다.")
+                return
+            
+            name = details.get("name", "Unknown")
+            status = details.get("status", "unknown")
+            status_emoji = ":large_green_circle:" if status == "running" else ":red_circle:" if status in ("stopped", "error") else ":large_yellow_circle:"
+            
+            # 상태 확인: 요약만 (이름, 서비스, 상태, 입력 한 줄)
+            text = (
+                f"*{name} 상태 요약*\n"
+                f"   서비스: {details.get('service', '')} | 상태: {status_emoji} {status}"
+            )
+            if service_type in ["StreamLive", "MediaLive"]:
+                input_status = services.tencent_client.get_channel_input_status(channel_id)
+                text += _format_input_status_brief(input_status)
+            text += f"\n   ID: `{details.get('id', '')}`"
+            
+            client.chat_postEphemeral(channel=channel, user=user_id, text=text)
         except Exception as e:
             logger.error(f"Error handling alert status check: {e}", exc_info=True)
 
     @app.action("alert_channel_detail")
     def handle_alert_channel_detail(ack, body, client, logger):
-        """Handle '채널 상세' button from alert notifications."""
+        """Handle '채널 상세' button: full details (input status, verification, failover, logs, SP/CSS)."""
         ack()
         
         try:
             action = body["actions"][0]
             value = action.get("value", "")
             
-            # Parse value: service:channel_id
-            if ":" in value:
-                parts = value.split(":")
-                service_type = parts[0]
-                channel_id = ":".join(parts[1:])
+            if ":" not in value:
+                return
+            parts = value.split(":")
+            service_type = parts[0]
+            channel_id = ":".join(parts[1:])
+            user_id = body["user"]["id"]
+            channel = body.get("channel", {}).get("id", "")
+            
+            details = services.tencent_client.get_resource_details(channel_id, service_type)
+            if not details:
+                client.chat_postEphemeral(channel=channel, user=user_id, text=f"채널 `{channel_id}` 상세 정보를 가져올 수 없습니다.")
+                return
+            
+            name = details.get("name", "Unknown")
+            text = (
+                f"*{name} 상세 정보*\n"
+                f"ID: `{details.get('id', '')}`\n"
+                f"서비스: {details.get('service', '')}\n"
+                f"상태: {details.get('status', 'unknown')}"
+            )
+            
+            # 채널 상세: 전체 입력/검증/구성/정책/이벤트/StreamPackage/CSS
+            if service_type in ["StreamLive", "MediaLive"]:
+                input_status = services.tencent_client.get_channel_input_status(channel_id)
+                text += _format_input_status_text(input_status)
+                if input_status:
+                    verification_sources = input_status.get("verification_sources", [])
+                    if verification_sources:
+                        text += f"\n\n*검증 소스:* {', '.join(verification_sources)}"
                 
-                user_id = body["user"]["id"]
-                channel = body.get("channel", {}).get("id", "")
-                
-                # Get detailed channel information
-                details = services.tencent_client.get_resource_details(channel_id, service_type)
-                if details:
-                    text = (
-                        f"*{details.get('name', 'Unknown')} 상세 정보*\n"
-                        f"ID: `{details.get('id', '')}`\n"
-                        f"서비스: {details.get('service', '')}\n"
-                        f"상태: {details.get('status', 'unknown')}"
-                    )
-                    
-                    # For StreamLive channels, show comprehensive input status
-                    if service_type in ["StreamLive", "MediaLive"]:
-                        input_status = services.tencent_client.get_channel_input_status(channel_id)
-                        text += _format_input_status_text(input_status)
-                        
-                        # Add additional details if available
-                        if input_status:
-                            verification_sources = input_status.get("verification_sources", [])
-                            if verification_sources:
-                                text += f"\n\n*검증 소스:* {', '.join(verification_sources)}"
-                else:
-                    text = f"채널 `{channel_id}` 상세 정보를 가져올 수 없습니다."
-                
-                client.chat_postEphemeral(
-                    channel=channel,
-                    user=user_id,
-                    text=text,
-                )
+                # 최근 채널 로그 (24h, 최근 N건)
+                try:
+                    logs = services.tencent_client.get_streamlive_channel_logs(channel_id, hours=24)
+                    if logs:
+                        text += "\n\n*최근 로그 (24h)*"
+                        for entry in logs[:8]:  # 최근 8건
+                            ev = entry.get("event_type", "")
+                            tm = entry.get("time", "") or entry.get("timestamp", "")
+                            pipe = entry.get("pipeline", "")
+                            msg = (entry.get("message", "") or "")[:50]
+                            if "T" in str(tm):
+                                tm = str(tm).replace("T", " ").replace("Z", "")[:16]
+                            text += f"\n   · {ev} | {tm} | {pipe}"
+                            if msg:
+                                text += f"\n     _{msg}_"
+                    else:
+                        text += "\n\n*최근 로그 (24h)*: 이벤트 없음"
+                except Exception as log_err:
+                    logger.debug(f"Could not fetch channel logs for detail: {log_err}")
+                    text += "\n\n*최근 로그*: 조회 실패"
+            
+            client.chat_postEphemeral(channel=channel, user=user_id, text=text)
         except Exception as e:
             logger.error(f"Error handling alert channel detail: {e}", exc_info=True)
 
