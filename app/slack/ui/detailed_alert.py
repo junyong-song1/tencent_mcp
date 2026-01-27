@@ -25,7 +25,7 @@ def create_detailed_alert_blocks(
     Args:
         app_name: Application name (e.g., "천리마-24x365 앱")
         app_icon: App icon emoji
-        alert_title: Main alert title (e.g., "[firing] GC 평균 1s 이상")
+        alert_title: Main alert title (e.g., "No Input Data")
         alert_emoji: Emoji for alert (e.g., ":fire::fire::fire:")
         severity: Alert severity ("critical", "high", "medium", "low")
         event_time: Event timestamp
@@ -216,7 +216,7 @@ def create_channel_alert_blocks(
     }
     
     emoji, severity_level = severity_map.get(severity.lower(), (":warning:", "medium"))
-    alert_title = f"[firing] {alert_type}"
+    alert_title = alert_type
     
     # Parse event time
     event_time = None
