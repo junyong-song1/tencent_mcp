@@ -626,6 +626,99 @@ def register(app: App, services):
 
         async_update_modal(client, state, clear_cache=True)
 
+    # Alert notification button handlers
+    @app.action("alert_status_check")
+    def handle_alert_status_check(ack, body, client, logger):
+        """Handle '상태 확인' button from alert notifications."""
+        ack()
+        
+        try:
+            action = body["actions"][0]
+            value = action.get("value", "")
+            
+            # Parse value: service:channel_id
+            if ":" in value:
+                parts = value.split(":")
+                service_type = parts[0]
+                channel_id = ":".join(parts[1:])
+                
+                user_id = body["user"]["id"]
+                channel = body.get("channel", {}).get("id", "")
+                
+                # Get channel status
+                details = services.tencent_client.get_resource_details(channel_id, service_type)
+                if details:
+                    text = (
+                        f"*{details.get('name', 'Unknown')} 상태*\n"
+                        f"ID: `{details.get('id', '')}`\n"
+                        f"서비스: {details.get('service', '')}\n"
+                        f"상태: {details.get('status', 'unknown')}"
+                    )
+                    
+                    # For StreamLive channels, also show input status
+                    if service_type in ["StreamLive", "MediaLive"]:
+                        input_status = services.tencent_client.get_channel_input_status(channel_id)
+                        text += _format_input_status_text(input_status)
+                else:
+                    text = f"채널 `{channel_id}` 정보를 가져올 수 없습니다."
+                
+                client.chat_postEphemeral(
+                    channel=channel,
+                    user=user_id,
+                    text=text,
+                )
+        except Exception as e:
+            logger.error(f"Error handling alert status check: {e}", exc_info=True)
+
+    @app.action("alert_channel_detail")
+    def handle_alert_channel_detail(ack, body, client, logger):
+        """Handle '채널 상세' button from alert notifications."""
+        ack()
+        
+        try:
+            action = body["actions"][0]
+            value = action.get("value", "")
+            
+            # Parse value: service:channel_id
+            if ":" in value:
+                parts = value.split(":")
+                service_type = parts[0]
+                channel_id = ":".join(parts[1:])
+                
+                user_id = body["user"]["id"]
+                channel = body.get("channel", {}).get("id", "")
+                
+                # Get detailed channel information
+                details = services.tencent_client.get_resource_details(channel_id, service_type)
+                if details:
+                    text = (
+                        f"*{details.get('name', 'Unknown')} 상세 정보*\n"
+                        f"ID: `{details.get('id', '')}`\n"
+                        f"서비스: {details.get('service', '')}\n"
+                        f"상태: {details.get('status', 'unknown')}"
+                    )
+                    
+                    # For StreamLive channels, show comprehensive input status
+                    if service_type in ["StreamLive", "MediaLive"]:
+                        input_status = services.tencent_client.get_channel_input_status(channel_id)
+                        text += _format_input_status_text(input_status)
+                        
+                        # Add additional details if available
+                        if input_status:
+                            verification_sources = input_status.get("verification_sources", [])
+                            if verification_sources:
+                                text += f"\n\n*검증 소스:* {', '.join(verification_sources)}"
+                else:
+                    text = f"채널 `{channel_id}` 상세 정보를 가져올 수 없습니다."
+                
+                client.chat_postEphemeral(
+                    channel=channel,
+                    user=user_id,
+                    text=text,
+                )
+        except Exception as e:
+            logger.error(f"Error handling alert channel detail: {e}", exc_info=True)
+
     # Fallback handler for unknown/auto-generated action IDs (like +Mv8B, qB3fB)
     # This catches actions that don't match any specific pattern
     # Note: This should be registered last, but Slack Bolt processes handlers in registration order

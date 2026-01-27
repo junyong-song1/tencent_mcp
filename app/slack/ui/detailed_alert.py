@@ -136,7 +136,9 @@ def create_detailed_alert_blocks(
         
         for btn in action_buttons:
             label = btn.get("label", "Action")
-            url = btn.get("url", "#")
+            url = btn.get("url", None)
+            action_id = btn.get("action_id", None)
+            value = btn.get("value", "")
             style = btn.get("style", "default")
             
             button = {
@@ -145,8 +147,20 @@ def create_detailed_alert_blocks(
                     "type": "plain_text",
                     "text": label
                 },
-                "url": url,
             }
+            
+            # Use action_id if provided, otherwise use url
+            if action_id:
+                button["action_id"] = action_id
+                if value:
+                    button["value"] = value
+            elif url:
+                button["url"] = url
+            else:
+                # Fallback: use label as action_id (not recommended but better than nothing)
+                button["action_id"] = f"alert_{label.lower().replace(' ', '_')}"
+                if value:
+                    button["value"] = value
             
             if style == "primary":
                 button["style"] = "primary"
@@ -303,16 +317,18 @@ def create_channel_alert_blocks(
             "css_streampackage_connected": css_info.get("streampackage_connected", False),
         })
     
-    # Action buttons
+    # Action buttons with fixed action_id for handler control
     action_buttons = [
         {
             "label": "상태 확인",
-            "url": f"slack://app?team=&id=&tab=home",  # Can be replaced with actual dashboard URL
+            "action_id": "alert_status_check",
+            "value": f"{service_type}:{channel_id}",
             "style": "primary"
         },
         {
             "label": "채널 상세",
-            "url": f"slack://app?team=&id=&tab=home",  # Can be replaced with actual detail URL
+            "action_id": "alert_channel_detail",
+            "value": f"{service_type}:{channel_id}",
             "style": "default"
         }
     ]
