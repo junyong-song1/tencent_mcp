@@ -64,7 +64,8 @@ Claude Desktop 또는 Cursor에서 자연어로 요청:
 "channel-123의 전체 상태를 확인해줘 (StreamLive + StreamPackage + CSS)"
 ```
 
-자세한 MCP 설정은 [MCP Setup Guide](docs/mcp-setup.md)를 참조하세요.
+**MCP 빠른 시작:** [MCP Quick Start Guide](docs/mcp-quick-start.md)  
+**상세 설정:** [MCP Setup Guide](docs/mcp-setup.md)
 
 ## Documentation
 
@@ -74,7 +75,8 @@ Claude Desktop 또는 Cursor에서 자연어로 요청:
 | [🏗️ Architecture](docs/architecture.md) | System design and components |
 | [📖 API Reference](docs/api-reference.md) | Commands and internal APIs |
 | [🔧 Troubleshooting](docs/troubleshooting.md) | Common issues and fixes |
-| [🤖 MCP Setup](docs/mcp-setup.md) | MCP Server setup for AI applications |
+| [🚀 MCP Quick Start](docs/mcp-quick-start.md) | MCP 빠른 시작 가이드 (3단계) |
+| [🤖 MCP Setup](docs/mcp-setup.md) | MCP Server 상세 설정 가이드 |
 | [📊 StreamPackage & CSS](docs/streampackage-css-integration.md) | StreamPackage and CSS integration guide |
 | [📋 CSS & StreamPackage 상세](docs/css-streampackage-details.md) | CSS & StreamPackage 확인 가능한 모든 정보 |
 | [📈 통합 로그 분석](docs/integrated-log-analysis.md) | 통합 로그 조회 및 분석 |
