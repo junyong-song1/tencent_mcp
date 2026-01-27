@@ -64,6 +64,7 @@ Claude Desktop 또는 Cursor에서 자연어로 요청:
 "channel-123의 전체 상태를 확인해줘 (StreamLive + StreamPackage + CSS)"
 ```
 
+**MCP 사용 방법:** [MCP 사용 방법 완전 정리](docs/mcp-usage-explained.md) ← **먼저 읽어보세요!**  
 **MCP 빠른 시작:** [MCP Quick Start Guide](docs/mcp-quick-start.md)  
 **상세 설정:** [MCP Setup Guide](docs/mcp-setup.md)
 
