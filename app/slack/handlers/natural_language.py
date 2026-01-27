@@ -73,14 +73,35 @@ def _parse_natural_language_query(text: str) -> Dict:
     """Parse natural language query and extract intent."""
     text_lower = text.lower()
     
-    # Check if it's a status query
+    # Expanded status query keywords (more patterns)
     status_keywords = [
-        "상태", "확인", "조회", "보여", "알려", "어떤", "무엇",
-        "status", "check", "show", "tell", "what", "which",
-        "실행", "동작", "작동", "running", "active", "활성",
+        # Korean
+        "상태", "확인", "조회", "보여", "알려", "어떤", "무엇", "어떻게",
+        "실행", "동작", "작동", "활성", "현재", "지금",
+        "목록", "리스트", "리스트", "전체", "모든",
+        "찾아", "검색", "찾기",
+        # English
+        "status", "check", "show", "tell", "what", "which", "how",
+        "running", "active", "list", "all", "search", "find",
+        # Patterns
+        "어떤 채널", "무슨 채널", "채널 목록", "채널 상태",
+        "channel status", "channel list", "show channel",
     ]
     
     is_status_query = any(keyword in text_lower for keyword in status_keywords)
+    
+    # Also check for common question patterns
+    question_patterns = [
+        r".*[?？].*",  # Contains question mark
+        r".*(어떤|무엇|어떻게|what|which|how).*",
+        r".*(보여|알려|show|tell).*",
+    ]
+    
+    if not is_status_query:
+        for pattern in question_patterns:
+            if re.search(pattern, text_lower):
+                is_status_query = True
+                break
     
     # Extract channel ID
     channel_id = _extract_channel_id(text)
@@ -186,8 +207,18 @@ def register(app: App, services):
             text = re.sub(r"<@[A-Z0-9]+>", "", text).strip()
             
             if not text:
-                say("안녕하세요! Tencent Cloud 상태를 확인해드릴 수 있습니다.\n"
-                    "예: `KBO 채널 상태 확인해줘`, `channel-123 상태 알려줘`")
+                help_text = (
+                    "안녕하세요! Tencent Cloud 상태를 확인해드릴 수 있습니다.\n\n"
+                    "*사용 가능한 질문 형식:*\n"
+                    "• `KBO 채널 상태 확인해줘` - 키워드로 검색\n"
+                    "• `channel-123 상태 알려줘` - 특정 채널 상태\n"
+                    "• `모든 채널 목록 보여줘` - 전체 목록\n"
+                    "• `StreamLive 채널 목록` - 서비스별 목록\n"
+                    "• `sp-channel-456 상태` - StreamPackage 채널\n"
+                    "• `app/stream-name 상태` - CSS 스트림\n\n"
+                    "*참고:* 제어 작업(시작/중지)은 `/tencent` 대시보드에서만 가능합니다."
+                )
+                say(help_text)
                 return
             
             # Check user permission
@@ -211,10 +242,22 @@ def register(app: App, services):
             query = _parse_natural_language_query(text)
             
             if not query["is_status_query"]:
-                say("상태 확인 요청으로 이해했습니다. 다음 형식으로 질문해주세요:\n"
+                help_text = (
+                    "질문을 이해하지 못했습니다. 다음 형식으로 질문해주세요:\n\n"
+                    "*상태 확인:*\n"
                     "• `KBO 채널 상태 확인해줘`\n"
                     "• `channel-123 상태 알려줘`\n"
-                    "• `모든 채널 목록 보여줘`")
+                    "• `sp-channel-456 상태`\n\n"
+                    "*목록 조회:*\n"
+                    "• `모든 채널 목록 보여줘`\n"
+                    "• `StreamLive 채널 목록`\n"
+                    "• `StreamPackage 채널 목록`\n\n"
+                    "*검색:*\n"
+                    "• `KBO 관련 채널 찾아줘`\n"
+                    "• `news 채널 검색`\n\n"
+                    "더 자세한 도움말은 `/tencent help`를 입력하세요."
+                )
+                say(help_text)
                 return
             
             # Handle channel ID query
