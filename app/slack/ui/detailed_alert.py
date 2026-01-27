@@ -4,8 +4,11 @@ Creates rich, detailed alert notifications similar to monitoring systems
 with comprehensive metric information and action buttons.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Any
+
+# Korea Standard Time (UTC+9)
+KST = timezone(timedelta(hours=9))
 
 
 def create_detailed_alert_blocks(
@@ -64,17 +67,21 @@ def create_detailed_alert_blocks(
             }
         })
     
-    # Event time
+    # Event time (convert to KST)
     if event_time:
         if isinstance(event_time, datetime):
-            time_str = event_time.strftime("%Y-%m-%d %H:%M")
+            # Convert to KST if timezone-aware, otherwise assume UTC
+            if event_time.tzinfo is None:
+                event_time = event_time.replace(tzinfo=timezone.utc)
+            kst_time = event_time.astimezone(KST)
+            time_str = kst_time.strftime("%Y-%m-%d %H:%M")
         else:
             time_str = str(event_time)
         blocks.append({
             "type": "context",
             "elements": [{
                 "type": "mrkdwn",
-                "text": f"*Event Time:* `start: {time_str}`"
+                "text": f"*Event Time:* `start: {time_str} (KST)`"
             }]
         })
     
@@ -236,6 +243,23 @@ def create_channel_alert_blocks(
         except Exception:
             pass
     
+    # Helper function to convert UTC time to KST string
+    def _utc_to_kst_str(utc_time_str: str) -> str:
+        """Convert UTC ISO time string to KST string."""
+        try:
+            if "T" in utc_time_str:
+                utc_dt = datetime.fromisoformat(utc_time_str.replace("Z", "+00:00"))
+            else:
+                utc_dt = datetime.fromisoformat(utc_time_str)
+            
+            if utc_dt.tzinfo is None:
+                utc_dt = utc_dt.replace(tzinfo=timezone.utc)
+            
+            kst_dt = utc_dt.astimezone(KST)
+            return kst_dt.strftime("%Y-%m-%d %H:%M:%S (KST)")
+        except Exception:
+            return utc_time_str  # Return original if parsing fails
+    
     # Build metric info
     metric_info = {
         "alert_type": alert_type,
@@ -247,9 +271,9 @@ def create_channel_alert_blocks(
     }
     
     if set_time:
-        metric_info["set_time"] = set_time
+        metric_info["set_time"] = _utc_to_kst_str(set_time)
     if clear_time:
-        metric_info["clear_time"] = clear_time
+        metric_info["clear_time"] = _utc_to_kst_str(clear_time)
     
     # Add channel details
     if channel_details:
@@ -293,8 +317,9 @@ def create_channel_alert_blocks(
         }
     ]
     
-    # Footer with service info
-    footer_text = f"Tencent Cloud MCP - {service_type} | {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    # Footer with service info (KST)
+    now_kst = datetime.now(KST)
+    footer_text = f"Tencent Cloud MCP - {service_type} | {now_kst.strftime('%Y-%m-%d %H:%M')} (KST)"
     
     return create_detailed_alert_blocks(
         app_name=f"Tencent Cloud MCP - {service_type}",
