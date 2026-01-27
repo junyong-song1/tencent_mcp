@@ -1,5 +1,6 @@
 """Slack command handlers."""
 import logging
+import re
 import threading
 
 from slack_bolt import App
@@ -8,6 +9,62 @@ from app.slack.ui.dashboard import DashboardUI
 from app.slack.ui.schedule import ScheduleUI
 
 logger = logging.getLogger(__name__)
+
+# 제어 명령어 차단 키워드 (생성/수정/삭제 관련)
+BLOCKED_KEYWORDS = {
+    # 생성 관련
+    "생성", "만들기", "추가", "create", "add", "make", "new", "생성해", "만들어", "추가해",
+    "생성해줘", "만들어줘", "추가해줘", "생성해주세요", "만들어주세요", "추가해주세요",
+    # 수정 관련
+    "수정", "변경", "업데이트", "modify", "update", "change", "edit", "수정해", "변경해",
+    "수정해줘", "변경해줘", "업데이트해줘", "수정해주세요", "변경해주세요", "업데이트해주세요",
+    # 삭제 관련
+    "삭제", "지우기", "제거", "delete", "remove", "drop", "삭제해", "지워", "제거해",
+    "삭제해줘", "지워줘", "제거해줘", "삭제해주세요", "지워주세요", "제거해주세요",
+}
+
+
+def _contains_blocked_keywords(text: str) -> bool:
+    """Check if text contains blocked control keywords."""
+    if not text:
+        return False
+    
+    text_lower = text.lower()
+    
+    # 키워드 확인
+    for keyword in BLOCKED_KEYWORDS:
+        if keyword.lower() in text_lower:
+            return True
+    
+    # 정규식 패턴으로 더 정확한 검사 (예: "생성해줘", "수정해줘" 등)
+    patterns = [
+        r"생성\S*",
+        r"만들\S*",
+        r"추가\S*",
+        r"수정\S*",
+        r"변경\S*",
+        r"업데이트\S*",
+        r"삭제\S*",
+        r"지우\S*",
+        r"제거\S*",
+        r"create\S*",
+        r"add\S*",
+        r"make\S*",
+        r"new\S*",
+        r"modify\S*",
+        r"update\S*",
+        r"change\S*",
+        r"edit\S*",
+        r"delete\S*",
+        r"remove\S*",
+        r"drop\S*",
+    ]
+    
+    for pattern in patterns:
+        if re.search(pattern, text_lower):
+            return True
+    
+    return False
 
 
 def register(app: App, services):
@@ -27,6 +84,15 @@ def register(app: App, services):
         settings = services.settings
         if settings.allowed_users_list and user_id not in settings.allowed_users_list:
             respond("접근 권한이 없습니다.")
+            return
+
+        # Block control commands (생성/수정/삭제)
+        if _contains_blocked_keywords(command_text):
+            respond(
+                ":no_entry_sign: *제어 명령어는 지원하지 않습니다*\n\n"
+                "생성, 수정, 삭제 등의 제어 작업은 대시보드의 버튼을 통해 수행해 주세요.\n"
+                "`/tencent` 명령어로 대시보드를 열어주세요."
+            )
             return
 
         cmd_parts = command_text.split()
