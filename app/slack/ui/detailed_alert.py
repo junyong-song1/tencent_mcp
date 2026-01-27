@@ -216,7 +216,14 @@ def create_channel_alert_blocks(
     }
     
     emoji, severity_level = severity_map.get(severity.lower(), (":warning:", "medium"))
-    alert_title = alert_type
+    
+    # Extract service type from channel_details
+    service_type = "StreamLive"  # Default
+    if channel_details:
+        service_type = channel_details.get("service", "StreamLive")
+    
+    # Include service in alert title for clarity
+    alert_title = f"[{service_type}] {alert_type}"
     
     # Parse event time
     event_time = None
@@ -236,6 +243,7 @@ def create_channel_alert_blocks(
         "channel_id": channel_id,
         "channel_name": channel_name,
         "pipeline": pipeline,
+        "service": service_type,  # Always include service
     }
     
     if set_time:
@@ -247,7 +255,6 @@ def create_channel_alert_blocks(
     if channel_details:
         metric_info.update({
             "channel_status": channel_details.get("status", "unknown"),
-            "service": channel_details.get("service", "StreamLive"),
         })
     
     # Add input status
@@ -286,11 +293,11 @@ def create_channel_alert_blocks(
         }
     ]
     
-    # Footer
-    footer_text = f"Tencent Cloud MCP Alert | {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    # Footer with service info
+    footer_text = f"Tencent Cloud MCP - {service_type} | {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     
     return create_detailed_alert_blocks(
-        app_name="Tencent Cloud MCP",
+        app_name=f"Tencent Cloud MCP - {service_type}",
         app_icon=":cloud:",
         alert_title=alert_title,
         alert_emoji=f"{emoji}{emoji}{emoji}",
