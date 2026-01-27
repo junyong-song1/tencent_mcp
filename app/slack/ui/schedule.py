@@ -92,7 +92,7 @@ class ScheduleUI:
             "type": "modal",
             "callback_id": "dashboard_modal_view",
             "private_metadata": metadata,
-            "title": {"type": "plain_text", "text": "Tencent Media Dashboard"},
+            "title": {"type": "plain_text", "text": "Tencent MCP"},
             "close": {"type": "plain_text", "text": "닫기"},
             "blocks": blocks[:100],
         }

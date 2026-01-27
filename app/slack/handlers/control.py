@@ -197,7 +197,16 @@ def register(app: App, services):
         ack()
 
         action = body["actions"][0]
-        selected_value = action["selected_option"]["value"]
+        
+        # Handle both overflow menu and static select
+        if "selected_option" in action:
+            selected_value = action["selected_option"]["value"]
+        elif "value" in action:
+            # Fallback for other action types
+            selected_value = action["value"]
+        else:
+            logger.warning(f"Unknown action format: {action}")
+            return
 
         # Parse action:service:resource_id
         parts = selected_value.split(":")
@@ -616,3 +625,102 @@ def register(app: App, services):
             )
 
         async_update_modal(client, state, clear_cache=True)
+
+    # Fallback handler for unknown/auto-generated action IDs (like +Mv8B, qB3fB)
+    # This catches actions that don't match any specific pattern
+    # Note: This should be registered last, but Slack Bolt processes handlers in registration order
+    # More specific patterns should be registered first
+    @app.action(re.compile(r"^[+\-]?[A-Za-z0-9_]+$"))
+    def handle_unknown_action(ack, body, client, logger):
+        """Handle unknown/auto-generated action IDs as fallback."""
+        ack()
+        
+        try:
+            action = body["actions"][0]
+            action_id = action.get("action_id", "")
+            value = action.get("value", "")
+            
+            logger.info(f"Handling unknown action {action_id} with value: {value}")
+            
+            # Try to parse value format: service:resource_id
+            # This works for buttons that have value set
+            if ":" in value:
+                parts = value.split(":")
+                if len(parts) >= 2:
+                    service_type = parts[0]
+                    resource_id = ":".join(parts[1:])
+                    
+                    view = body.get("view", {})
+                    state = extract_modal_filter_state(view)
+                    channel_id = state.get("channel_id")
+                    user_id = body["user"]["id"]
+                    
+                    # Check if this is an info action by checking button text or context
+                    # For now, assume any unknown action with value is an info request
+                    details = services.tencent_client.get_resource_details(resource_id, service_type)
+                    if details:
+                        text = (
+                            f"*{details.get('name', 'Unknown')}*\n"
+                            f"ID: `{details.get('id', '')}`\n"
+                            f"서비스: {details.get('service', '')}\n"
+                            f"상태: {details.get('status', 'unknown')}"
+                        )
+                        
+                        # For StreamLive channels, also show input status
+                        if service_type in ["StreamLive", "MediaLive"]:
+                            input_status = services.tencent_client.get_channel_input_status(resource_id)
+                            text += _format_input_status_text(input_status)
+                    else:
+                        text = "리소스 정보를 가져올 수 없습니다."
+                    
+                    client.chat_postEphemeral(
+                        channel=channel_id or body.get("channel", {}).get("id", ""),
+                        user=user_id,
+                        text=text,
+                    )
+                    return
+            
+            # Handle overflow menu with selected_option
+            if "selected_option" in action:
+                selected_value = action["selected_option"].get("value", "")
+                logger.info(f"Handling unknown action {action_id} with selected_option value: {selected_value}")
+                
+                # Try to parse as resource menu format: action:service:resource_id
+                if ":" in selected_value:
+                    parts = selected_value.split(":")
+                    if len(parts) >= 3:
+                        action_type = parts[0]
+                        service_type = parts[1]
+                        resource_id = ":".join(parts[2:])
+                        
+                        # Handle info action
+                        if action_type == "info":
+                            view = body.get("view", {})
+                            state = extract_modal_filter_state(view)
+                            channel_id = state.get("channel_id")
+                            user_id = body["user"]["id"]
+                            
+                            details = services.tencent_client.get_resource_details(resource_id, service_type)
+                            if details:
+                                text = (
+                                    f"*{details.get('name', 'Unknown')}*\n"
+                                    f"ID: `{details.get('id', '')}`\n"
+                                    f"서비스: {details.get('service', '')}\n"
+                                    f"상태: {details.get('status', 'unknown')}"
+                                )
+                                
+                                # For StreamLive channels, also show input status
+                                if service_type in ["StreamLive", "MediaLive"]:
+                                    input_status = services.tencent_client.get_channel_input_status(resource_id)
+                                    text += _format_input_status_text(input_status)
+                            else:
+                                text = "리소스 정보를 가져올 수 없습니다."
+                            
+                            client.chat_postEphemeral(
+                                channel=channel_id or body.get("channel", {}).get("id", ""),
+                                user=user_id,
+                                text=text,
+                            )
+                            return
+        except Exception as e:
+            logger.debug(f"Error handling unknown action {action_id}: {e}", exc_info=True)

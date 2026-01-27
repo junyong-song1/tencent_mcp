@@ -28,12 +28,10 @@ class DashboardUI:
             "type": "modal",
             "callback_id": "dashboard_modal_view",
             "private_metadata": json.dumps({"channel_id": channel_id, "page": 0}),
-            "title": {"type": "plain_text", "text": "Tencent Media Dashboard"},
+            "title": {"type": "plain_text", "text": "Tencent MCP"},
             "close": {"type": "plain_text", "text": "닫기"},
             "blocks": [
-                create_header_block("로딩 중..."),
-                create_section_block("텐센트 클라우드에서 리소스를 가져오고 있습니다."),
-                create_context_block(":hourglass_flowing_sand: _잠시만 기다려 주세요..._"),
+                create_section_block(":hourglass_flowing_sand: 텐센트 클라우드에서 리소스를 가져오고 있습니다..."),
             ],
         }
 
@@ -124,7 +122,7 @@ class DashboardUI:
             "type": "modal",
             "callback_id": "dashboard_modal_view",
             "private_metadata": metadata,
-            "title": {"type": "plain_text", "text": "Tencent Media Dashboard"},
+            "title": {"type": "plain_text", "text": "Tencent MCP"},
             "close": {"type": "plain_text", "text": "닫기"},
             "blocks": blocks[:100],  # Slack limit
         }
