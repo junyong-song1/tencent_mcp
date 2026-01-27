@@ -15,7 +15,11 @@ Tencent Cloud StreamLive (MDL) and StreamLink (MDC) 리소스 관리를 위한 �
 - 📅 **Schedule Management** - Plan and track broadcast schedules
 - ⚡ **Fast Loading** - Parallel fetching with intelligent caching
 - 🔄 **Integrated Control** - Start/Stop linked resources together
-- 🤖 **MCP Protocol** - AI 애플리케이션과 통합 (Claude Desktop, Cursor)
+- 🤖 **MCP Protocol** - AI 애플리케이션과 통합 (개발자용, 선택사항)
+
+> **💡 일반 사용자는 Slack만 사용하면 됩니다!**  
+> MCP는 개발/자동화가 필요한 경우에만 설정하세요.  
+> [사용자 역할별 가이드](docs/user-roles-guide.md) 참조
 
 ## Quick Start
 
