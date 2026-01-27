@@ -1,10 +1,18 @@
 """Alert monitoring service for StreamLive/StreamLink channels."""
 import hashlib
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Optional, Set
 
 from app.services.scheduler import SchedulerService
+
+try:
+    from dateutil import parser
+    DATEUTIL_AVAILABLE = True
+except ImportError:
+    DATEUTIL_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("python-dateutil not available. Install with: pip install python-dateutil")
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +188,7 @@ class AlertMonitorService:
 
     def _is_new_alert(self, channel_id: str, alert: Any, pipeline: str) -> bool:
         """
-        Check if this alert is new (not previously sent).
+        Check if this alert is new (not previously sent) and active.
 
         Args:
             channel_id: Channel ID
@@ -188,10 +196,49 @@ class AlertMonitorService:
             pipeline: Pipeline identifier
 
         Returns:
-            True if this is a new alert
+            True if this is a new, active alert
         """
         alert_type = getattr(alert, 'Type', 'Unknown')
         set_time = getattr(alert, 'SetTime', '')
+        clear_time = getattr(alert, 'ClearTime', '')
+
+        # Skip alerts that are already cleared (resolved)
+        if clear_time:
+            logger.debug(f"Skipping cleared alert: {channel_id}:{alert_type} (cleared at {clear_time})")
+            return False
+
+        # Skip alerts that are too old (older than 24 hours)
+        # This prevents sending historical alerts when server starts
+        if DATEUTIL_AVAILABLE:
+            try:
+                if set_time:
+                    set_datetime = parser.parse(set_time)
+                    if set_datetime.tzinfo is None:
+                        set_datetime = set_datetime.replace(tzinfo=timezone.utc)
+                    now = datetime.now(timezone.utc)
+                    age_hours = (now - set_datetime).total_seconds() / 3600
+                    
+                    # Only process alerts from the last 24 hours
+                    if age_hours > 24:
+                        logger.debug(f"Skipping old alert: {channel_id}:{alert_type} (age: {age_hours:.1f} hours)")
+                        return False
+            except Exception as e:
+                logger.debug(f"Could not parse set_time {set_time}: {e}")
+        else:
+            # Fallback: simple string comparison for ISO format
+            try:
+                if set_time and "T" in set_time:
+                    # Extract date part and compare
+                    date_part = set_time.split("T")[0]
+                    today = datetime.now(timezone.utc).date()
+                    alert_date = datetime.strptime(date_part, "%Y-%m-%d").date()
+                    days_old = (today - alert_date).days
+                    
+                    if days_old > 1:  # More than 1 day old
+                        logger.debug(f"Skipping old alert: {channel_id}:{alert_type} (age: {days_old} days)")
+                        return False
+            except Exception:
+                pass  # If parsing fails, allow the alert (better safe than sorry)
 
         # Create unique key for this alert
         alert_key = f"{channel_id}:{pipeline}:{alert_type}:{set_time}"
