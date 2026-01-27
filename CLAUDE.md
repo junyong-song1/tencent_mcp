@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Slack Bot for managing Tencent Cloud StreamLive (MDL) and StreamLink (MDC) resources. Users interact via the `/tencent` slash command or by mentioning the bot. The bot provides an interactive modal dashboard for searching, filtering, and controlling media streaming channels.
+Tencent Cloud StreamLive (MDL) and StreamLink (MDC) 리소스 관리를 위한 통합 솔루션입니다.
+
+**Two interfaces:**
+1. **Slack Bot** (`app/`) - Users interact via `/tencent` slash command
+2. **MCP Server** (`mcp_server/`) - AI applications (Claude Desktop, Cursor) use MCP protocol
 
 ## Commands
 
@@ -15,13 +19,16 @@ Slack Bot for managing Tencent Cloud StreamLive (MDL) and StreamLink (MDC) resou
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
-# Run the bot (foreground - FastAPI + Slack)
+# Run the Slack Bot (foreground - FastAPI + Slack)
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 
-# Run the bot (background via script)
+# Run the Slack Bot (background via script)
 ./scripts/start.sh
 ./scripts/restart.sh
 ./scripts/shutdown.sh
+
+# Run the MCP Server (for AI applications)
+python -m mcp_server
 ```
 
 ### Testing
@@ -49,19 +56,42 @@ flake8 app/ tests/
 
 ## Architecture
 
-### Request Flow
+### Request Flow (Slack Bot)
 
 ```
 HTTP/WebSocket → FastAPI (app/main.py)
-                     ↓
-                 Slack Bolt (Socket Mode) ← Slack Events
-                     ↓
-              app/slack/handlers/* → Services → Tencent Cloud APIs
-                     ↓
-              app/slack/ui/* (Block Kit) → Slack Modal/Message
+ ↓
+ Slack Bolt (Socket Mode) ← Slack Events
+ ↓
+ app/slack/handlers/* → Services → Tencent Cloud APIs
+ ↓
+ app/slack/ui/* (Block Kit) → Slack Modal/Message
+```
+
+### Request Flow (MCP Server)
+
+```
+AI Application (Claude Desktop / Cursor)
+ ↓
+ MCP Protocol (stdio) → mcp_server/server.py
+ ↓
+├── Resources (mcp_server/resources.py)
+│   └── Read-only data: channels, flows, schedules, streampackage, css
+│
+└── Tools (mcp_server/tools.py)
+    └── Actions: start, stop, search, create_schedule, 
+        get_streampackage_status, get_css_stream_status, get_full_status
+ ↓
+ app/services/* → Tencent Cloud APIs
 ```
 
 ### Core Modules
+
+#### MCP Server (`mcp_server/`)
+
+- **server.py**: MCP 서버 진입점. stdio 모드로 AI 앱과 통신.
+- **resources.py**: MCP Resources 정의 (채널, 플로우, 스케줄 데이터 노출)
+- **tools.py**: MCP Tools 정의 (start, stop, search, schedule 등 액션)
 
 #### Main Application (`app/`)
 
@@ -71,7 +101,7 @@ HTTP/WebSocket → FastAPI (app/main.py)
 
 #### Services (`app/services/`)
 
-- **tencent_client.py**: Wrapper around Tencent Cloud SDK with async support via `asyncio.to_thread()`. Implements TTL caching and parallel fetching.
+- **tencent_client.py**: Wrapper around Tencent Cloud SDK with async support via `asyncio.to_thread()`. Implements TTL caching and parallel fetching. Supports StreamLive (MDL), StreamLink (MDC), StreamPackage (MDP), and CSS (Live) services.
 
 - **schedule_manager.py**: Broadcast schedule management with thread-safe operations. Supports CRUD operations and notification tracking.
 
@@ -108,13 +138,22 @@ HTTP/WebSocket → FastAPI (app/main.py)
 
 ### Resource Hierarchy
 
-StreamLink flows feed into StreamLive channels. Linkage is determined by matching StreamLink `output_urls` to StreamLive `input_endpoints`.
+StreamLink flows feed into StreamLive channels. StreamLive channels output to StreamPackage, which distributes to CSS.
 
 ```
 StreamLink Flow (output_urls: ["rtmp://..."])
     ↓ feeds into
 StreamLive Channel (input_endpoints: ["rtmp://..."])
+    ↓ outputs to
+StreamPackage Channel (Input URLs: [main, backup])
+    ↓ distributes to
+CSS Streams (Stream State: active/inactive)
 ```
+
+**Linkage Logic:**
+- StreamLink `output_urls` matches StreamLive `input_endpoints`
+- StreamLive `OutputGroups` connects to StreamPackage channels
+- StreamPackage distributes to CSS streams
 
 ### Control Options
 

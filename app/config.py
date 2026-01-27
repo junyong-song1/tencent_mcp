@@ -44,6 +44,7 @@ class Settings(BaseSettings):
 
     # Notification Settings
     NOTIFICATION_CHANNEL: str = Field(default="", description="Notification channel ID")
+    ALERT_CHECK_INTERVAL_MINUTES: int = Field(default=5, description="Alert check interval in minutes (1-60)")
 
     # Scheduler Settings
     SCHEDULER_CLEANUP_INTERVAL: int = Field(default=3600, description="Cleanup interval in seconds")

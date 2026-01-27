@@ -26,8 +26,15 @@ if [ -d "venv" ]; then
     source venv/bin/activate
 fi
 
-# Start FastAPI with uvicorn
-nohup python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > app.log 2>&1 &
+# Get port from .env or use default
+PORT=${PORT:-8000}
+if [ -f .env ]; then
+    source .env
+    PORT=${PORT:-8000}
+fi
 
-echo "✅ Server started on http://localhost:8000"
+# Start FastAPI with uvicorn
+nohup python3 -m uvicorn app.main:app --host 0.0.0.0 --port $PORT > app.log 2>&1 &
+
+echo "✅ Server started on http://localhost:$PORT"
 echo "📄 Check app.log for details"

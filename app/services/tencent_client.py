@@ -1264,6 +1264,994 @@ class TencentCloudClient:
 
         return filtered
 
+    def list_streampackage_channels(self) -> List[Dict]:
+        """List StreamPackage channels."""
+        if not STREAMPACKAGE_AVAILABLE:
+            logger.warning("StreamPackage SDK not available")
+            return []
+
+        try:
+            client = self._get_mdp_client()
+            if not client:
+                return []
+
+            req = mdp_models.DescribeStreamPackageChannelsRequest()
+            resp = client.DescribeStreamPackageChannels(req)
+
+            channels = []
+            if hasattr(resp, "Infos") and resp.Infos:
+                for info in resp.Infos:
+                    channel_id = getattr(info, "Id", "")
+                    channel_name = getattr(info, "Name", "")
+                    state = getattr(info, "State", "unknown")
+
+                    # Get input details
+                    input_details = []
+                    points = getattr(info, "Points", None)
+                    if points:
+                        inputs = getattr(points, "Inputs", [])
+                        for inp in inputs:
+                            input_details.append({
+                                "id": getattr(inp, "InputId", ""),
+                                "name": getattr(inp, "InputName", ""),
+                                "url": getattr(inp, "Url", ""),
+                            })
+
+                    channels.append({
+                        "id": channel_id,
+                        "name": channel_name or "Unknown Channel",
+                        "status": self._normalize_streamlink_status(state),  # Similar status format
+                        "service": "StreamPackage",
+                        "type": "channel",
+                        "input_details": input_details,
+                    })
+
+            logger.info(f"Found {len(channels)} StreamPackage channels")
+            return channels
+
+        except Exception as e:
+            logger.error(f"Failed to list StreamPackage channels: {e}")
+            return []
+
+    def get_streampackage_channel_details(self, channel_id: str) -> Optional[Dict]:
+        """Get detailed information about a StreamPackage channel."""
+        if not STREAMPACKAGE_AVAILABLE:
+            return None
+
+        try:
+            result = self._get_streampackage_input_status(channel_id)
+            if not result:
+                return None
+
+            # Get additional channel info
+            client = self._get_mdp_client()
+            if not client:
+                return result
+
+            req = mdp_models.DescribeStreamPackageChannelRequest()
+            req.Id = channel_id
+            resp = client.DescribeStreamPackageChannel(req)
+
+            if hasattr(resp, "Info"):
+                info = resp.Info
+                result.update({
+                    "name": getattr(info, "Name", ""),
+                    "state": getattr(info, "State", ""),
+                    "protocol": getattr(info, "Protocol", ""),
+                })
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to get StreamPackage channel details: {e}")
+            return None
+
+    def list_css_domains(self) -> List[Dict]:
+        """List CSS (Cloud Streaming Service) domains."""
+        if not CSS_AVAILABLE:
+            logger.warning("CSS SDK not available")
+            return []
+
+        try:
+            client = self._get_css_client()
+            if not client:
+                return []
+
+            req = live_models.DescribeLiveDomainsRequest()
+            resp = client.DescribeLiveDomains(req)
+
+            domains = []
+            if hasattr(resp, "DomainList") and resp.DomainList:
+                for domain_info in resp.DomainList:
+                    domain_name = getattr(domain_info, "DomainName", "")
+                    domain_type = getattr(domain_info, "DomainType", "")
+                    status = getattr(domain_info, "Status", "")
+                    cname = getattr(domain_info, "Cname", "")
+
+                    domains.append({
+                        "domain": domain_name,
+                        "type": domain_type,
+                        "status": status,
+                        "cname": cname,
+                        "service": "CSS",
+                    })
+
+            logger.info(f"Found {len(domains)} CSS domains")
+            return domains
+
+        except Exception as e:
+            logger.error(f"Failed to list CSS domains: {e}")
+            return []
+
+    def list_css_streams(self, domain: Optional[str] = None) -> List[Dict]:
+        """List active CSS streams."""
+        if not CSS_AVAILABLE:
+            logger.warning("CSS SDK not available")
+            return []
+
+        try:
+            client = self._get_css_client()
+            if not client:
+                return []
+
+            # If domain is provided, get streams for that domain
+            if domain:
+                req = live_models.DescribeLiveStreamOnlineListRequest()
+                req.DomainName = domain
+                req.PageNum = 1
+                req.PageSize = 100
+
+                resp = client.DescribeLiveStreamOnlineList(req)
+                streams = []
+
+                if hasattr(resp, "OnlineInfo") and resp.OnlineInfo:
+                    for stream_info in resp.OnlineInfo:
+                        stream_name = getattr(stream_info, "StreamName", "")
+                        app_name = getattr(stream_info, "AppName", "")
+                        publish_time = getattr(stream_info, "PublishTime", "")
+                        expire_time = getattr(stream_info, "ExpireTime", "")
+
+                        streams.append({
+                            "stream_name": stream_name,
+                            "app_name": app_name,
+                            "full_name": f"{app_name}/{stream_name}",
+                            "domain": domain,
+                            "publish_time": publish_time,
+                            "expire_time": expire_time,
+                            "service": "CSS",
+                        })
+
+                return streams
+            else:
+                # List all domains first, then get streams for each
+                domains = self.list_css_domains()
+                all_streams = []
+
+                for domain_info in domains:
+                    domain_name = domain_info.get("domain")
+                    if domain_name:
+                        domain_streams = self.list_css_streams(domain_name)
+                        all_streams.extend(domain_streams)
+
+                return all_streams
+
+        except Exception as e:
+            logger.error(f"Failed to list CSS streams: {e}")
+            return []
+
+    def get_css_stream_details(self, stream_name: str, domain: Optional[str] = None) -> Optional[Dict]:
+        """Get detailed information about a CSS stream."""
+        if not CSS_AVAILABLE:
+            return None
+
+        try:
+            result = self._get_css_stream_status(stream_name, domain)
+            if not result:
+                return None
+
+            # Get additional stream info
+            client = self._get_css_client()
+            if not client:
+                return result
+
+            # Try to get stream push info
+            try:
+                push_req = live_models.DescribeLiveStreamPushInfoListRequest()
+                if domain:
+                    push_req.DomainName = domain
+
+                parts = stream_name.split("/")
+                if len(parts) >= 2:
+                    push_req.AppName = parts[0]
+                    push_req.StreamName = "/".join(parts[1:])
+                else:
+                    push_req.StreamName = stream_name
+
+                push_resp = client.DescribeLiveStreamPushInfoList(push_req)
+                if hasattr(push_resp, "DataInfoList") and push_resp.DataInfoList:
+                    push_info = push_resp.DataInfoList[0]
+                    result.update({
+                        "push_url": getattr(push_info, "StreamUrl", ""),
+                        "push_domain": getattr(push_info, "DomainName", ""),
+                        "push_app": getattr(push_info, "AppName", ""),
+                        "push_stream": getattr(push_info, "StreamName", ""),
+                    })
+            except Exception as e:
+                logger.debug(f"Could not get push info: {e}")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to get CSS stream details: {e}")
+            return None
+
+    def get_css_stream_bandwidth(
+        self,
+        stream_name: str,
+        domain: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """
+        Get CSS stream bandwidth and traffic information.
+        
+        Args:
+            stream_name: Stream name (app/stream format)
+            domain: CSS domain (optional)
+            start_time: Start time in ISO format
+            end_time: End time in ISO format
+        
+        Returns:
+            Dict with bandwidth and traffic information
+        """
+        if not CSS_AVAILABLE:
+            return None
+
+        try:
+            from datetime import datetime, timedelta, timezone
+
+            client = self._get_css_client()
+            if not client:
+                return None
+
+            # Use DescribeStreamDayPlayInfoList for bandwidth/traffic
+            req = live_models.DescribeStreamDayPlayInfoListRequest()
+            
+            if domain:
+                req.DomainName = domain
+
+            # Parse stream name
+            parts = stream_name.split("/")
+            if len(parts) >= 2:
+                req.AppName = parts[0]
+                req.StreamName = "/".join(parts[1:])
+            else:
+                req.StreamName = stream_name
+
+            # Set time range (default: last 24 hours)
+            if not start_time:
+                start_time = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+            if not end_time:
+                end_time = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+            req.StartTime = start_time
+            req.EndTime = end_time
+
+            resp = client.DescribeStreamDayPlayInfoList(req)
+
+            if hasattr(resp, "DataInfoList") and resp.DataInfoList:
+                total_bandwidth = 0
+                total_traffic = 0
+                daily_info = []
+
+                for data_info in resp.DataInfoList:
+                    bandwidth = getattr(data_info, "Bandwidth", 0)
+                    flux = getattr(data_info, "Flux", 0)
+                    time_str = getattr(data_info, "Time", "")
+
+                    total_bandwidth += bandwidth
+                    total_traffic += flux
+
+                    daily_info.append({
+                        "time": time_str,
+                        "bandwidth": bandwidth,  # bps
+                        "traffic": flux,  # bytes
+                    })
+
+                return {
+                    "stream_name": stream_name,
+                    "domain": domain,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "total_bandwidth": total_bandwidth,  # Total bandwidth in bps
+                    "total_traffic": total_traffic,  # Total traffic in bytes
+                    "average_bandwidth": total_bandwidth / len(daily_info) if daily_info else 0,
+                    "daily_info": daily_info,
+                }
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to get CSS stream bandwidth: {e}")
+            return None
+
+    def get_css_stream_quality(
+        self,
+        stream_name: str,
+        domain: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """
+        Get CSS stream quality information (bitrate, framerate, resolution, etc.).
+        
+        Args:
+            stream_name: Stream name (app/stream format)
+            domain: CSS domain (optional)
+        
+        Returns:
+            Dict with stream quality information
+        """
+        if not CSS_AVAILABLE:
+            return None
+
+        try:
+            client = self._get_css_client()
+            if not client:
+                return None
+
+            # Get push quality info
+            push_req = live_models.DescribeStreamPushInfoListRequest()
+            if domain:
+                push_req.DomainName = domain
+
+            parts = stream_name.split("/")
+            if len(parts) >= 2:
+                push_req.AppName = parts[0]
+                push_req.StreamName = "/".join(parts[1:])
+            else:
+                push_req.StreamName = stream_name
+
+            push_resp = client.DescribeStreamPushInfoList(push_req)
+
+            quality_info = {
+                "stream_name": stream_name,
+                "domain": domain,
+            }
+
+            if hasattr(push_resp, "DataInfoList") and push_resp.DataInfoList:
+                push_info = push_resp.DataInfoList[0]
+
+                # Extract quality information
+                quality_info.update({
+                    "push_url": getattr(push_info, "StreamUrl", ""),
+                    "push_domain": getattr(push_info, "DomainName", ""),
+                    "push_app": getattr(push_info, "AppName", ""),
+                    "push_stream": getattr(push_info, "StreamName", ""),
+                    "push_time": getattr(push_info, "PushTime", ""),
+                    "client_ip": getattr(push_info, "ClientIp", ""),
+                })
+
+                # Try to get detailed push quality (if available in newer API versions)
+                # Note: Some fields may not be available in all API versions
+                try:
+                    # These fields might be available in DescribeStreamPushInfoList
+                    video_codec = getattr(push_info, "VideoCodec", "")
+                    audio_codec = getattr(push_info, "AudioCodec", "")
+                    video_bitrate = getattr(push_info, "VideoBitrate", 0)
+                    audio_bitrate = getattr(push_info, "AudioBitrate", 0)
+                    video_fps = getattr(push_info, "VideoFps", 0)
+                    resolution = getattr(push_info, "Resolution", "")
+
+                    if video_codec or audio_codec:
+                        quality_info["codec"] = {
+                            "video": video_codec,
+                            "audio": audio_codec,
+                        }
+                    if video_bitrate or audio_bitrate:
+                        quality_info["bitrate"] = {
+                            "video": video_bitrate,  # bps
+                            "audio": audio_bitrate,  # bps
+                            "total": video_bitrate + audio_bitrate,
+                        }
+                    if video_fps:
+                        quality_info["framerate"] = video_fps
+                    if resolution:
+                        quality_info["resolution"] = resolution
+                except Exception:
+                    pass  # Quality fields may not be available
+
+            # Get play quality info
+            try:
+                play_req = live_models.DescribeStreamPlayInfoListRequest()
+                if domain:
+                    play_req.DomainName = domain
+
+                parts = stream_name.split("/")
+                if len(parts) >= 2:
+                    play_req.AppName = parts[0]
+                    play_req.StreamName = "/".join(parts[1:])
+                else:
+                    play_req.StreamName = stream_name
+
+                # Get recent play info (last hour)
+                from datetime import datetime, timedelta, timezone
+                end_time = datetime.now(timezone.utc)
+                start_time = end_time - timedelta(hours=1)
+
+                play_req.StartTime = start_time.strftime("%Y-%m-%d %H:%M:%S")
+                play_req.EndTime = end_time.strftime("%Y-%m-%d %H:%M:%S")
+
+                play_resp = client.DescribeStreamPlayInfoList(play_req)
+
+                if hasattr(play_resp, "DataInfoList") and play_resp.DataInfoList:
+                    play_info = play_resp.DataInfoList[0]
+
+                    # Extract play quality and viewer info
+                    play_bandwidth = getattr(play_info, "Bandwidth", 0)
+                    play_flux = getattr(play_info, "Flux", 0)
+                    play_time = getattr(play_info, "Time", "")
+
+                    quality_info["play_info"] = {
+                        "bandwidth": play_bandwidth,  # bps
+                        "traffic": play_flux,  # bytes
+                        "time": play_time,
+                    }
+
+                    # Try to get viewer count (if available)
+                    try:
+                        # Note: Viewer count might be in a different field or API
+                        # This is a placeholder - actual field name may vary
+                        viewer_count = getattr(play_info, "Online", 0) or getattr(play_info, "ViewerCount", 0)
+                        if viewer_count:
+                            quality_info["viewer_count"] = viewer_count
+                    except Exception:
+                        pass
+
+            except Exception as e:
+                logger.debug(f"Could not get play quality info: {e}")
+
+            return quality_info if quality_info.get("push_url") or quality_info.get("play_info") else None
+
+        except Exception as e:
+            logger.error(f"Failed to get CSS stream quality: {e}")
+            return None
+
+    def get_css_stream_events(
+        self,
+        stream_name: str,
+        domain: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        hours: int = 24,
+    ) -> List[Dict]:
+        """
+        Get CSS stream events (start, stop, etc.).
+        
+        Args:
+            stream_name: Stream name (app/stream format)
+            domain: CSS domain (optional)
+            start_time: Start time in ISO format
+            end_time: End time in ISO format
+            hours: Number of hours to look back
+        
+        Returns:
+            List of stream events
+        """
+        if not CSS_AVAILABLE:
+            return []
+
+        try:
+            from datetime import datetime, timedelta, timezone
+
+            client = self._get_css_client()
+            if not client:
+                return []
+
+            req = live_models.DescribeLiveStreamEventListRequest()
+            
+            if domain:
+                req.DomainName = domain
+
+            # Parse stream name
+            parts = stream_name.split("/")
+            if len(parts) >= 2:
+                req.AppName = parts[0]
+                req.StreamName = "/".join(parts[1:])
+            else:
+                req.StreamName = stream_name
+
+            # Set time range
+            if not start_time:
+                start_time = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+            if not end_time:
+                end_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+            req.StartTime = start_time
+            req.EndTime = end_time
+
+            resp = client.DescribeLiveStreamEventList(req)
+
+            events = []
+            if hasattr(resp, "EventList") and resp.EventList:
+                for event in resp.EventList:
+                    event_type = getattr(event, "EventType", "")
+                    event_time = getattr(event, "Time", "")
+                    event_status = getattr(event, "Status", "")
+
+                    events.append({
+                        "service": "CSS",
+                        "resource_id": stream_name,
+                        "domain": domain,
+                        "event_type": event_type,
+                        "time": event_time,
+                        "status": event_status,
+                        "timestamp": event_time,
+                    })
+
+            # Sort by time (most recent first)
+            events.sort(key=lambda x: x.get('time', ''), reverse=True)
+
+            return events
+
+        except Exception as e:
+            logger.error(f"Failed to get CSS stream events: {e}")
+            return []
+
+    def get_streamlive_channel_logs(
+        self,
+        channel_id: str,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        hours: int = 24,
+        event_types: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        """
+        Get StreamLive channel logs.
+        
+        Args:
+            channel_id: StreamLive channel ID
+            start_time: Start time in ISO format (optional)
+            end_time: End time in ISO format (optional)
+            hours: Number of hours to look back (if start_time not provided)
+            event_types: Filter by event types (optional, e.g., ["PipelineFailover", "PipelineRecover"])
+        
+        Returns:
+            List of log entries with type, time, pipeline, message
+        """
+        try:
+            from datetime import datetime, timedelta, timezone
+
+            client = self._get_mdl_client()
+
+            log_req = mdl_models.DescribeStreamLiveChannelLogsRequest()
+            log_req.ChannelId = channel_id
+
+            if start_time:
+                log_req.StartTime = start_time
+            else:
+                log_req.StartTime = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            if end_time:
+                log_req.EndTime = end_time
+            else:
+                log_req.EndTime = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            log_resp = client.DescribeStreamLiveChannelLogs(log_req)
+
+            if not log_resp.Infos:
+                return []
+
+            infos = log_resp.Infos
+            all_logs = []
+
+            # Collect logs from both pipelines
+            for pipeline_attr in ['Pipeline0', 'Pipeline1']:
+                pipeline_name = "Pipeline A (Main)" if pipeline_attr == 'Pipeline0' else "Pipeline B (Backup)"
+                pipeline_logs = getattr(infos, pipeline_attr, None)
+                if not pipeline_logs:
+                    continue
+
+                logs = pipeline_logs if isinstance(pipeline_logs, list) else [pipeline_logs]
+                for log in logs:
+                    log_type = getattr(log, 'Type', '')
+                    log_time = getattr(log, 'Time', '')
+                    log_message = getattr(log, 'Message', '')
+
+                    # Filter by event types if specified
+                    if event_types and log_type not in event_types:
+                        continue
+
+                    all_logs.append({
+                        "service": "StreamLive",
+                        "resource_id": channel_id,
+                        "pipeline": pipeline_name,
+                        "event_type": log_type,
+                        "time": log_time,
+                        "message": log_message,
+                        "timestamp": log_time,
+                    })
+
+            # Sort by time (most recent first)
+            all_logs.sort(key=lambda x: x.get('time', ''), reverse=True)
+
+            return all_logs
+
+        except Exception as e:
+            logger.error(f"Failed to get StreamLive channel logs: {e}")
+            return []
+
+    def get_streamlink_flow_logs(
+        self,
+        flow_id: str,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        hours: int = 24,
+    ) -> List[Dict]:
+        """
+        Get StreamLink flow logs/events.
+        
+        Note: StreamLink may not have direct log API, so we use flow status history.
+        
+        Args:
+            flow_id: StreamLink flow ID
+            start_time: Start time in ISO format (optional)
+            end_time: End time in ISO format (optional)
+            hours: Number of hours to look back
+        
+        Returns:
+            List of log entries
+        """
+        try:
+            from datetime import datetime, timezone
+
+            # StreamLink doesn't have direct log API, so we get flow details
+            # and infer events from status changes
+            client = self._get_mdc_client()
+            req = mdc_models.DescribeStreamLinkFlowRequest()
+            req.FlowId = flow_id
+            resp = client.DescribeStreamLinkFlow(req)
+
+            if not hasattr(resp, "Info"):
+                return []
+
+            info = resp.Info
+            logs = []
+
+            # Get current state as an event
+            state = getattr(info, "State", "")
+            state_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            logs.append({
+                "service": "StreamLink",
+                "resource_id": flow_id,
+                "event_type": "StateChange",
+                "time": state_time,
+                "message": f"Current state: {state}",
+                "state": state,
+                "timestamp": state_time,
+            })
+
+            # Note: StreamLink may not provide historical logs via API
+            # This is a limitation - we can only see current state
+
+            return logs
+
+        except Exception as e:
+            logger.error(f"Failed to get StreamLink flow logs: {e}")
+            return []
+
+    def get_streampackage_channel_logs(
+        self,
+        channel_id: str,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        hours: int = 24,
+    ) -> List[Dict]:
+        """
+        Get StreamPackage channel logs/events.
+        
+        Note: StreamPackage may not have direct log API, so we use channel status.
+        
+        Args:
+            channel_id: StreamPackage channel ID
+            start_time: Start time in ISO format (optional)
+            end_time: End time in ISO format (optional)
+            hours: Number of hours to look back
+        
+        Returns:
+            List of log entries
+        """
+        try:
+            from datetime import datetime, timezone
+
+            if not STREAMPACKAGE_AVAILABLE:
+                return []
+
+            client = self._get_mdp_client()
+            if not client:
+                return []
+
+            req = mdp_models.DescribeStreamPackageChannelRequest()
+            req.Id = channel_id
+            resp = client.DescribeStreamPackageChannel(req)
+
+            if not hasattr(resp, "Info"):
+                return []
+
+            info = resp.Info
+            logs = []
+
+            # Get current state as an event
+            state = getattr(info, "State", "")
+            state_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            logs.append({
+                "service": "StreamPackage",
+                "resource_id": channel_id,
+                "event_type": "StateChange",
+                "time": state_time,
+                "message": f"Current state: {state}",
+                "state": state,
+                "timestamp": state_time,
+            })
+
+            # Get input status
+            input_status = self._get_streampackage_input_status(channel_id)
+            if input_status:
+                active_input = input_status.get("active_input")
+                if active_input:
+                    logs.append({
+                        "service": "StreamPackage",
+                        "resource_id": channel_id,
+                        "event_type": "InputStatus",
+                        "time": state_time,
+                        "message": f"Active input: {active_input}",
+                        "active_input": active_input,
+                        "timestamp": state_time,
+                    })
+
+            # Note: StreamPackage may not provide historical logs via API
+            # This is a limitation - we can only see current state
+
+            return logs
+
+        except Exception as e:
+            logger.error(f"Failed to get StreamPackage channel logs: {e}")
+            return []
+
+    def get_css_stream_logs(
+        self,
+        stream_name: str,
+        domain: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        hours: int = 24,
+    ) -> List[Dict]:
+        """
+        Get CSS stream logs/events.
+        
+        Args:
+            stream_name: Stream name (app/stream format)
+            domain: CSS domain (optional)
+            start_time: Start time in ISO format (optional)
+            end_time: End time in ISO format (optional)
+            hours: Number of hours to look back
+        
+        Returns:
+            List of log entries
+        """
+        try:
+            from datetime import datetime, timezone
+
+            if not CSS_AVAILABLE:
+                return []
+
+            client = self._get_css_client()
+            if not client:
+                return []
+
+            logs = []
+
+            # Get current stream state
+            stream_status = self._get_css_stream_status(stream_name, domain)
+            if stream_status:
+                state_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                is_active = stream_status.get("is_active", False)
+                stream_state = stream_status.get("stream_state", "")
+
+                logs.append({
+                    "service": "CSS",
+                    "resource_id": stream_name,
+                    "domain": domain,
+                    "event_type": "StreamState",
+                    "time": state_time,
+                    "message": f"Stream state: {stream_state} (active: {is_active})",
+                    "stream_state": stream_state,
+                    "is_active": is_active,
+                    "timestamp": state_time,
+                })
+
+            # Try to get push info history (if available)
+            try:
+                push_req = live_models.DescribeLiveStreamPushInfoListRequest()
+                if domain:
+                    push_req.DomainName = domain
+
+                parts = stream_name.split("/")
+                if len(parts) >= 2:
+                    push_req.AppName = parts[0]
+                    push_req.StreamName = "/".join(parts[1:])
+                else:
+                    push_req.StreamName = stream_name
+
+                push_resp = client.DescribeLiveStreamPushInfoList(push_req)
+                if hasattr(push_resp, "DataInfoList") and push_resp.DataInfoList:
+                    for push_info in push_resp.DataInfoList:
+                        push_time = getattr(push_info, "PushTime", "")
+                        if push_time:
+                            logs.append({
+                                "service": "CSS",
+                                "resource_id": stream_name,
+                                "domain": domain,
+                                "event_type": "PushInfo",
+                                "time": push_time,
+                                "message": f"Push info available",
+                                "push_url": getattr(push_info, "StreamUrl", ""),
+                                "timestamp": push_time,
+                            })
+            except Exception as e:
+                logger.debug(f"Could not get CSS push info: {e}")
+
+            # Note: CSS may have limited historical log API
+            # This is a limitation - we can only see current state and recent push info
+
+            return logs
+
+        except Exception as e:
+            logger.error(f"Failed to get CSS stream logs: {e}")
+            return []
+
+    def get_integrated_logs(
+        self,
+        channel_id: str,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        hours: int = 24,
+        services: Optional[List[str]] = None,
+        event_types: Optional[List[str]] = None,
+    ) -> Dict:
+        """
+        Get integrated logs from StreamLive, StreamLink, StreamPackage, and CSS.
+        
+        Args:
+            channel_id: StreamLive channel ID (primary resource)
+            start_time: Start time in ISO format (optional)
+            end_time: End time in ISO format (optional)
+            hours: Number of hours to look back
+            services: Filter by services (optional, e.g., ["StreamLive", "StreamLink"])
+            event_types: Filter by event types (optional)
+        
+        Returns:
+            Dict with integrated logs from all services
+        """
+        try:
+            from app.services.linkage import LinkageService
+
+            # Get StreamLive logs
+            streamlive_logs = []
+            if not services or "StreamLive" in services:
+                streamlive_logs = self.get_streamlive_channel_logs(
+                    channel_id=channel_id,
+                    start_time=start_time,
+                    end_time=end_time,
+                    hours=hours,
+                    event_types=event_types,
+                )
+
+            # Get linked StreamLink flows
+            streamlink_logs = []
+            if not services or "StreamLink" in services:
+                resources = self.list_all_resources()
+                linkage_service = LinkageService()
+                hierarchy = linkage_service.build_hierarchy(resources)
+
+                for h in hierarchy:
+                    if h.parent.get("id") == channel_id:
+                        for child in h.children:
+                            flow_id = child.get("id")
+                            if flow_id:
+                                flow_logs = self.get_streamlink_flow_logs(
+                                    flow_id=flow_id,
+                                    start_time=start_time,
+                                    end_time=end_time,
+                                    hours=hours,
+                                )
+                                streamlink_logs.extend(flow_logs)
+                        break
+
+            # Get StreamPackage logs (if connected)
+            streampackage_logs = []
+            if not services or "StreamPackage" in services:
+                # Get StreamPackage ID from channel input status
+                input_status = self.get_channel_input_status(channel_id)
+                if input_status and "streampackage_verification" in input_status:
+                    sp_id = input_status["streampackage_verification"].get("streampackage_id")
+                    if sp_id:
+                        sp_logs = self.get_streampackage_channel_logs(
+                            channel_id=sp_id,
+                            start_time=start_time,
+                            end_time=end_time,
+                            hours=hours,
+                        )
+                        streampackage_logs.extend(sp_logs)
+
+            # Get CSS logs (if connected)
+            css_logs = []
+            if not services or "CSS" in services:
+                # Try to find CSS streams related to this channel
+                # This is indirect - we need to find CSS streams that might be related
+                # For now, we'll get CSS streams from StreamPackage if available
+                if streampackage_logs:
+                    # CSS streams are typically related to StreamPackage
+                    # We can list active CSS streams and match them
+                    all_css_streams = self.list_css_streams()
+                    for css_stream in all_css_streams[:10]:  # Limit to first 10 for performance
+                        stream_name = css_stream.get("full_name", "")
+                        if stream_name:
+                            css_stream_logs = self.get_css_stream_logs(
+                                stream_name=stream_name,
+                                start_time=start_time,
+                                end_time=end_time,
+                                hours=hours,
+                            )
+                            css_logs.extend(css_stream_logs)
+
+            # Combine all logs
+            all_logs = streamlive_logs + streamlink_logs + streampackage_logs + css_logs
+
+            # Sort by timestamp (most recent first)
+            all_logs.sort(key=lambda x: x.get('timestamp', x.get('time', '')), reverse=True)
+
+            # Filter by event types if specified
+            if event_types:
+                all_logs = [log for log in all_logs if log.get('event_type') in event_types]
+
+            # Generate summary statistics
+            event_counts = {}
+            service_counts = {}
+            for log in all_logs:
+                event_type = log.get('event_type', 'Unknown')
+                service = log.get('service', 'Unknown')
+                event_counts[event_type] = event_counts.get(event_type, 0) + 1
+                service_counts[service] = service_counts.get(service, 0) + 1
+
+            return {
+                "channel_id": channel_id,
+                "start_time": start_time or (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "end_time": end_time or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "total_logs": len(all_logs),
+                "service_counts": service_counts,
+                "event_counts": event_counts,
+                "logs": all_logs,
+                "streamlive_logs": streamlive_logs,
+                "streamlink_logs": streamlink_logs,
+                "streampackage_logs": streampackage_logs,
+                "css_logs": css_logs,
+            }
+
+        except Exception as e:
+            from datetime import datetime, timedelta, timezone
+            logger.error(f"Failed to get integrated logs: {e}", exc_info=True)
+            return {
+                "channel_id": channel_id,
+                "start_time": start_time or (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "end_time": end_time or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "total_logs": 0,
+                "error": str(e),
+                "logs": [],
+                "service_counts": {},
+                "event_counts": {},
+            }
+
 
 class AsyncTencentClient:
     """Async wrapper for TencentCloudClient."""

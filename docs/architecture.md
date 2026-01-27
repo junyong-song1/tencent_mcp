@@ -29,9 +29,15 @@
 │  │  │ MDL Client  │  │  MDC Client         │    │  │
 │  │  │ (StreamLive)│  │  (StreamLink)       │    │  │
 │  │  └─────────────┘  └─────────────────────┘    │  │
+│  │  ┌─────────────┐  ┌─────────────────────┐    │  │
+│  │  │ MDP Client  │  │  Live Client        │    │  │
+│  │  │(StreamPackage)│ │  (CSS)             │    │  │
+│  │  └─────────────┘  └─────────────────────┘    │  │
 │  │                                               │  │
 │  │  - list_mdl_channels()                        │  │
 │  │  - list_streamlink_inputs()                   │  │
+│  │  - list_streampackage_channels()              │  │
+│  │  - list_css_streams()                        │  │
 │  │  - start/stop operations                      │  │
 │  │  - Cache management                           │  │
 │  └───────────────────────────────────────────────┘  │
@@ -45,6 +51,10 @@
 │  ┌────────────┐  ┌────────────────┐ │
 │  │ StreamLive │  │  StreamLink    │ │
 │  │ (MDL)      │  │  (MDC)         │ │
+│  └────────────┘  └────────────────┘ │
+│  ┌────────────┐  ┌────────────────┐ │
+│  │StreamPackage│  │  CSS (Live)     │ │
+│  │ (MDP)       │  │                 │ │
 │  └────────────┘  └────────────────┘ │
 └──────────────────────────────────────┘
 ```
@@ -72,6 +82,9 @@
 | `list_all_resources()` | Parallel fetch MDL + StreamLink |
 | `list_mdl_channels()` | StreamLive channels with inputs |
 | `list_streamlink_inputs()` | StreamLink flows with outputs |
+| `list_streampackage_channels()` | StreamPackage channels |
+| `list_css_streams()` | CSS active streams |
+| `get_channel_input_status()` | Input status (main/backup) with StreamPackage/CSS verification |
 | `control_resource()` | Start/Stop/Restart unified |
 
 **Thread Safety**: Creates per-request SDK clients
@@ -111,8 +124,10 @@
    ↓
 4. [Async Thread]
    ├─ tencent_cloud_client.list_all_resources()
-   │   ├─ list_mdl_channels() ──┐ (Parallel)
-   │   └─ list_streamlink_inputs() ┘
+   │   ├─ list_mdl_channels() ──────────┐
+   │   ├─ list_streamlink_inputs() ────┤ (Parallel)
+   │   ├─ list_streampackage_channels()─┤
+   │   └─ list_css_streams() ───────────┘
    ↓
 5. slack_ui.py: create_dashboard_modal()
    ↓
@@ -127,11 +142,20 @@
 StreamLive Channel (Parent)
 ├── input_endpoints: ["rtmp://...", "srt://..."]
 │
-└── StreamLink Flow (Child) ← Linked via output_urls
-    └── output_urls: ["rtmp://...", "srt://..."]
+├── StreamLink Flow (Child) ← Linked via output_urls
+│   └── output_urls: ["rtmp://...", "srt://..."]
+│
+├── StreamPackage Channel (Output) ← Connected via OutputGroups
+│   └── Input URLs: [main, backup]
+│
+└── CSS Streams (Distribution) ← StreamPackage output
+    └── Stream State: active/inactive
 ```
 
-**Linkage Logic**: `output_urls` of StreamLink matches `input_endpoints` of StreamLive
+**Linkage Logic**: 
+- `output_urls` of StreamLink matches `input_endpoints` of StreamLive
+- StreamLive `OutputGroups` connects to StreamPackage channels
+- StreamPackage distributes to CSS streams
 
 ---
 

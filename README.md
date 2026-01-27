@@ -1,6 +1,10 @@
-# Tencent MCP Slack Bot
+# Tencent Cloud MCP
 
-Slack Bot for managing Tencent Cloud StreamLive (MDL) and StreamLink (MDC) resources.
+Tencent Cloud StreamLive (MDL) and StreamLink (MDC) 리소스 관리를 위한 통합 솔루션.
+
+**두 가지 인터페이스를 제공합니다:**
+1. **Slack Bot** - 사용자가 Slack에서 직접 명령어로 제어
+2. **MCP Server** - AI 애플리케이션(Claude Desktop, Cursor 등)에서 사용
 
 ## Features
 
@@ -11,6 +15,7 @@ Slack Bot for managing Tencent Cloud StreamLive (MDL) and StreamLink (MDC) resou
 - 📅 **Schedule Management** - Plan and track broadcast schedules
 - ⚡ **Fast Loading** - Parallel fetching with intelligent caching
 - 🔄 **Integrated Control** - Start/Stop linked resources together
+- 🤖 **MCP Protocol** - AI 애플리케이션과 통합 (Claude Desktop, Cursor)
 
 ## Quick Start
 
@@ -25,7 +30,8 @@ cp .env.example .env
 # (See docs/setup.md for detailed instructions)
 
 # Run (FastAPI + Slack)
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+# Port is configured in .env file (default: 3000)
+uvicorn app.main:app --host 0.0.0.0 --port 3000
 
 # Or use scripts
 ./scripts/start.sh
@@ -35,11 +41,30 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ## Usage
 
+### Slack Bot
+
 ```
 /tencent           # Open dashboard
 /tencent help      # Show help
 /tencent [keyword] # Search resources
 ```
+
+### MCP Server (AI Applications)
+
+Claude Desktop 또는 Cursor에서 자연어로 요청:
+
+```
+"모든 StreamLive 채널 목록을 보여줘"
+"KBO 관련 채널을 검색해줘"
+"channel-123의 입력 상태가 main인지 backup인지 확인해줘"
+"channel-123과 연결된 모든 StreamLink 플로우를 함께 시작해줘"
+"StreamPackage 채널 목록을 보여줘"
+"sp-channel-123의 입력 상태 확인해줘"
+"CSS 활성 스트림 목록을 보여줘"
+"channel-123의 전체 상태를 확인해줘 (StreamLive + StreamPackage + CSS)"
+```
+
+자세한 MCP 설정은 [MCP Setup Guide](docs/mcp-setup.md)를 참조하세요.
 
 ## Documentation
 
@@ -49,11 +74,23 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | [🏗️ Architecture](docs/architecture.md) | System design and components |
 | [📖 API Reference](docs/api-reference.md) | Commands and internal APIs |
 | [🔧 Troubleshooting](docs/troubleshooting.md) | Common issues and fixes |
+| [🤖 MCP Setup](docs/mcp-setup.md) | MCP Server setup for AI applications |
+| [📊 StreamPackage & CSS](docs/streampackage-css-integration.md) | StreamPackage and CSS integration guide |
+| [📋 CSS & StreamPackage 상세](docs/css-streampackage-details.md) | CSS & StreamPackage 확인 가능한 모든 정보 |
+| [📈 통합 로그 분석](docs/integrated-log-analysis.md) | 통합 로그 조회 및 분석 |
+| [🎬 OTT Operations](docs/ott-operations-guide.md) | OTT 미디어 운영 활용 가이드 |
+| [🔔 Detailed Alerts](docs/detailed-alert-guide.md) | 상세 알림 시스템 가이드 |
 
 ## Project Structure
 
 ```
 tencent_mcp/
+├── mcp_server/                   # MCP Server (for AI applications)
+│   ├── __init__.py
+│   ├── __main__.py               # Module entry point
+│   ├── server.py                 # MCP server main
+│   ├── resources.py              # MCP Resources
+│   └── tools.py                  # MCP Tools
 ├── app/                          # Main application (FastAPI + Slack Bolt)
 │   ├── main.py                   # Entry point
 │   ├── config.py                 # Pydantic settings

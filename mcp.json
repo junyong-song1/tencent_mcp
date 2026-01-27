@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "tencent-cloud": {
+      "command": "python",
+      "args": ["-m", "mcp_server"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "TENCENT_SECRET_ID": "${env:TENCENT_SECRET_ID}",
+        "TENCENT_SECRET_KEY": "${env:TENCENT_SECRET_KEY}",
+        "TENCENT_REGION": "${env:TENCENT_REGION}"
+      }
+    }
+  }
+}

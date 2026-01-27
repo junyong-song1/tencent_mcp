@@ -21,14 +21,20 @@ requests==2.31.0
 
 # Tencent Cloud SDK (full package includes all services)
 tencentcloud-sdk-python>=3.0.1000
-# StreamPackage SDK (MSP) for input status verification
-tencentcloud-sdk-python-msp>=3.0.1000
+# StreamPackage SDK (MDP) for input status verification
+# Note: MDP SDK may be included in main SDK, but explicitly install if needed
+# tencentcloud-sdk-python-mdp>=3.0.1000
+# CSS (Live) SDK - included in main SDK, but explicitly install if needed
+# tencentcloud-sdk-python-live>=3.0.1000
 
 # Environment Variables
 python-dotenv==1.0.0
 
 # Logging
 structlog==24.1.0
+
+# MCP (Model Context Protocol)
+mcp>=1.0.0
 
 # Development
 pytest==7.4.3

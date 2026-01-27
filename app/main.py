@@ -143,15 +143,16 @@ async def lifespan(app: FastAPI):
     logger.info("Notification service initialized")
 
     # Initialize alert monitor service
+    alert_check_interval = getattr(settings, 'ALERT_CHECK_INTERVAL_MINUTES', 5)
     _alert_monitor = init_alert_monitor(
         tencent_client=_services.tencent_client,
         slack_client=slack_app.client,
         scheduler=_scheduler,
         notification_channel=settings.NOTIFICATION_CHANNEL if hasattr(settings, 'NOTIFICATION_CHANNEL') else "",
         register_jobs=True,
-        check_interval_minutes=5,  # Check every 5 minutes (cost-optimized)
+        check_interval_minutes=alert_check_interval,
     )
-    logger.info("Alert monitor service initialized (5 min interval)")
+    logger.info(f"Alert monitor service initialized ({alert_check_interval} min interval)")
 
     # Start Slack Socket Mode in background thread
     _slack_handler = SocketModeHandler(slack_app, settings.SLACK_APP_TOKEN)
@@ -243,7 +244,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
-        port=8000,
+        port=settings.PORT,
         reload=settings.DEBUG,
         log_level="debug" if settings.DEBUG else "info",
     )

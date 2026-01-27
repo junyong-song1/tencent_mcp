@@ -214,6 +214,7 @@ class AlertMonitorService:
         channel_id: str,
         channel_name: str,
         alert: Dict,
+        use_detailed_format: bool = True,
     ):
         """
         Send an alert notification to Slack.
@@ -222,6 +223,7 @@ class AlertMonitorService:
             channel_id: Channel ID
             channel_name: Channel display name
             alert: Alert data dictionary
+            use_detailed_format: Whether to use detailed alert format (default: True)
         """
         if not self.slack_client or not self.notification_channel:
             logger.warning("Slack client or notification channel not configured")
@@ -236,81 +238,132 @@ class AlertMonitorService:
 
             # Determine severity
             if alert_type in self.CRITICAL_ALERTS:
-                emoji = ":rotating_light:"
-                severity = "CRITICAL"
-                color = "danger"
+                severity = "critical"
             elif alert_type in self.WARNING_ALERTS:
-                emoji = ":warning:"
-                severity = "WARNING"
-                color = "warning"
+                severity = "warning"
             else:
-                emoji = ":information_source:"
-                severity = "INFO"
-                color = "good"
+                severity = "info"
 
-            # Format time
-            if set_time and "T" in set_time:
-                set_time_display = set_time.replace("T", " ").replace("Z", " UTC")[:19]
+            # Use detailed format if enabled
+            if use_detailed_format:
+                from app.slack.ui.detailed_alert import create_channel_alert_blocks
+                
+                # Get additional channel information
+                channel_details = None
+                input_status = None
+                streampackage_info = None
+                css_info = None
+                
+                try:
+                    if self.tencent_client:
+                        # Get channel details
+                        channel_details = self.tencent_client.get_resource_details(
+                            channel_id, "StreamLive"
+                        )
+                        
+                        # Get input status
+                        input_status = self.tencent_client.get_channel_input_status(channel_id)
+                        
+                        # Extract StreamPackage info from input_status
+                        if input_status and "streampackage_verification" in input_status:
+                            streampackage_info = input_status["streampackage_verification"]
+                        
+                        # Extract CSS info from input_status
+                        if input_status and "css_verification" in input_status:
+                            css_info = input_status["css_verification"]
+                except Exception as e:
+                    logger.debug(f"Could not fetch additional channel info: {e}")
+
+                # Create detailed alert blocks
+                blocks = create_channel_alert_blocks(
+                    channel_id=channel_id,
+                    channel_name=channel_name,
+                    alert_type=alert_type,
+                    alert_message=message,
+                    severity=severity,
+                    pipeline=pipeline,
+                    set_time=set_time,
+                    clear_time=clear_time,
+                    channel_details=channel_details,
+                    input_status=input_status,
+                    streampackage_info=streampackage_info,
+                    css_info=css_info,
+                )
             else:
-                set_time_display = set_time or "Unknown"
+                # Fallback to simple format
+                if alert_type in self.CRITICAL_ALERTS:
+                    emoji = ":rotating_light:"
+                    severity_display = "CRITICAL"
+                elif alert_type in self.WARNING_ALERTS:
+                    emoji = ":warning:"
+                    severity_display = "WARNING"
+                else:
+                    emoji = ":information_source:"
+                    severity_display = "INFO"
 
-            # Build message blocks
-            blocks = [
-                {
-                    "type": "header",
-                    "text": {
-                        "type": "plain_text",
-                        "text": f"{emoji} StreamLive Alert: {alert_type}",
-                        "emoji": True,
-                    }
-                },
-                {
-                    "type": "section",
-                    "fields": [
-                        {
-                            "type": "mrkdwn",
-                            "text": f"*채널:*\n{channel_name}"
-                        },
-                        {
-                            "type": "mrkdwn",
-                            "text": f"*파이프라인:*\n{pipeline}"
-                        },
-                        {
-                            "type": "mrkdwn",
-                            "text": f"*심각도:*\n{severity}"
-                        },
-                        {
-                            "type": "mrkdwn",
-                            "text": f"*발생 시간:*\n{set_time_display}"
-                        },
-                    ]
-                },
-            ]
+                # Format time
+                if set_time and "T" in set_time:
+                    set_time_display = set_time.replace("T", " ").replace("Z", " UTC")[:19]
+                else:
+                    set_time_display = set_time or "Unknown"
 
-            # Add message if available
-            if message:
+                # Build simple message blocks
+                blocks = [
+                    {
+                        "type": "header",
+                        "text": {
+                            "type": "plain_text",
+                            "text": f"{emoji} StreamLive Alert: {alert_type}",
+                            "emoji": True,
+                        }
+                    },
+                    {
+                        "type": "section",
+                        "fields": [
+                            {
+                                "type": "mrkdwn",
+                                "text": f"*채널:*\n{channel_name}"
+                            },
+                            {
+                                "type": "mrkdwn",
+                                "text": f"*파이프라인:*\n{pipeline}"
+                            },
+                            {
+                                "type": "mrkdwn",
+                                "text": f"*심각도:*\n{severity_display}"
+                            },
+                            {
+                                "type": "mrkdwn",
+                                "text": f"*발생 시간:*\n{set_time_display}"
+                            },
+                        ]
+                    },
+                ]
+
+                # Add message if available
+                if message:
+                    blocks.append({
+                        "type": "context",
+                        "elements": [{
+                            "type": "mrkdwn",
+                            "text": f"_{message}_"
+                        }]
+                    })
+
+                # Add channel ID for reference
                 blocks.append({
                     "type": "context",
                     "elements": [{
                         "type": "mrkdwn",
-                        "text": f"_{message}_"
+                        "text": f"Channel ID: `{channel_id}`"
                     }]
                 })
-
-            # Add channel ID for reference
-            blocks.append({
-                "type": "context",
-                "elements": [{
-                    "type": "mrkdwn",
-                    "text": f"Channel ID: `{channel_id}`"
-                }]
-            })
 
             # Send to Slack
             self.slack_client.chat_postMessage(
                 channel=self.notification_channel,
                 blocks=blocks,
-                text=f"{emoji} StreamLive Alert: {alert_type} - {channel_name}",
+                text=f"🚨 StreamLive Alert: {alert_type} - {channel_name}",
             )
 
             logger.info(f"Sent alert notification: {alert_type} for {channel_name}")
