@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     # Data Storage
     DATA_DIR: str = Field(default="data", description="Data directory for JSON files")
 
+    # AI Assistant (Claude API)
+    ANTHROPIC_API_KEY: str = Field(default="", description="Anthropic Claude API key for natural language queries")
+
     @property
     def allowed_users_list(self) -> List[str]:
         """Parse ALLOWED_USERS into a list."""

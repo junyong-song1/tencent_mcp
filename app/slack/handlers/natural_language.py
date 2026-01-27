@@ -1,6 +1,7 @@
 """Natural language handler for Slack mentions.
 
 Allows users to query Tencent Cloud status using natural language in Slack channels.
+Uses Claude API with MCP tools for intelligent responses.
 """
 import logging
 import re
@@ -153,6 +154,26 @@ def _format_search_results(resources: List[Dict], keyword: str) -> str:
 def register(app: App, services):
     """Register natural language handlers."""
     
+    # Initialize AI Assistant if API key is available
+    ai_assistant = None
+    try:
+        from app.services.ai_assistant import AIAssistant
+        
+        settings = services.settings
+        if hasattr(settings, 'ANTHROPIC_API_KEY') and settings.ANTHROPIC_API_KEY:
+            ai_assistant = AIAssistant(
+                api_key=settings.ANTHROPIC_API_KEY,
+                tencent_client=services.tencent_client,
+                schedule_manager=services.schedule_manager,
+            )
+            logger.info("AI Assistant initialized with Claude API")
+        else:
+            logger.info("ANTHROPIC_API_KEY not set, using fallback keyword matching")
+    except ImportError:
+        logger.warning("Anthropic SDK not available, using fallback keyword matching")
+    except Exception as e:
+        logger.error(f"Failed to initialize AI Assistant: {e}")
+    
     @app.event("app_mention")
     def handle_mention(event, client, say):
         """Handle bot mentions in Slack channels."""
@@ -175,6 +196,17 @@ def register(app: App, services):
                 say("접근 권한이 없습니다.")
                 return
             
+            # Use AI Assistant if available
+            if ai_assistant:
+                try:
+                    response = ai_assistant.answer_query(text)
+                    say(response)
+                    return
+                except Exception as e:
+                    logger.error(f"AI Assistant error: {e}", exc_info=True)
+                    # Fall through to keyword matching
+            
+            # Fallback to keyword matching
             # Parse natural language query
             query = _parse_natural_language_query(text)
             
