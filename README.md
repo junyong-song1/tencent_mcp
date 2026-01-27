@@ -47,10 +47,19 @@ uvicorn app.main:app --host 0.0.0.0 --port 3000
 
 ### Slack Bot
 
+**대시보드 (제어 작업):**
 ```
 /tencent           # Open dashboard
 /tencent help      # Show help
 /tencent [keyword] # Search resources
+```
+
+**자연어 조회 (채널에서 멘션):**
+```
+@tencent-bot KBO 채널 상태 확인해줘
+@tencent-bot channel-123 상태 알려줘
+@tencent-bot 모든 채널 목록 보여줘
+@tencent-bot StreamLive 채널 목록 보여줘
 ```
 
 ### MCP Server (AI Applications)

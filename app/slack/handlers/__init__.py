@@ -9,10 +9,11 @@ def register_all_handlers(app: App, services):
         app: Slack Bolt App instance
         services: ServiceContainer with all services
     """
-    from . import commands, dashboard, schedule_tab, status_tab, control
+    from . import commands, dashboard, schedule_tab, status_tab, control, natural_language
 
     commands.register(app, services)
     dashboard.register(app, services)
     schedule_tab.register(app, services)
     status_tab.register(app, services)
     control.register(app, services)
+    natural_language.register(app, services)  # Natural language queries in channels
