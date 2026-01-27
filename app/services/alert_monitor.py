@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Optional, Set
 
+from app.config import get_settings
 from app.services.scheduler import SchedulerService
 
 try:
@@ -38,6 +39,7 @@ class AlertMonitorService:
         slack_client: Any = None,
         scheduler: Optional[SchedulerService] = None,
         notification_channel: str = "",
+        max_age_hours: int = 1,
     ):
         """
         Initialize the alert monitor service.
@@ -47,14 +49,16 @@ class AlertMonitorService:
             slack_client: Slack WebClient for sending messages
             scheduler: APScheduler service instance
             notification_channel: Slack channel ID for notifications
+            max_age_hours: Only notify for alerts that occurred within this many hours; 0 = 24h
         """
         self.tencent_client = tencent_client
         self.slack_client = slack_client
         self.scheduler = scheduler
         self.notification_channel = notification_channel
+        self._max_age_hours = max_age_hours if max_age_hours > 0 else 24
 
         # Track sent alerts to avoid duplicates
-        # Key: "{channel_id}:{alert_type}:{set_time}"
+        # Key: "{channel_id}:{pipeline}:{alert_type}:{set_time}"
         self._sent_alerts: Set[str] = set()
 
         # Track last check time per channel
@@ -207,8 +211,9 @@ class AlertMonitorService:
             logger.debug(f"Skipping cleared alert: {channel_id}:{alert_type} (cleared at {clear_time})")
             return False
 
-        # Skip alerts that are too old (older than 24 hours)
-        # This prevents sending historical alerts when server starts
+        # Skip alerts that are too old (older than max_age_hours)
+        # This prevents "same old alert" from being sent repeatedly throughout the day
+        max_h = self._max_age_hours
         if DATEUTIL_AVAILABLE:
             try:
                 if set_time:
@@ -217,28 +222,28 @@ class AlertMonitorService:
                         set_datetime = set_datetime.replace(tzinfo=timezone.utc)
                     now = datetime.now(timezone.utc)
                     age_hours = (now - set_datetime).total_seconds() / 3600
-                    
-                    # Only process alerts from the last 24 hours
-                    if age_hours > 24:
-                        logger.debug(f"Skipping old alert: {channel_id}:{alert_type} (age: {age_hours:.1f} hours)")
+                    if age_hours > max_h:
+                        logger.debug(
+                            f"Skipping old alert: {channel_id}:{alert_type} (age: {age_hours:.1f}h > {max_h}h)"
+                        )
                         return False
             except Exception as e:
                 logger.debug(f"Could not parse set_time {set_time}: {e}")
         else:
-            # Fallback: simple string comparison for ISO format
             try:
                 if set_time and "T" in set_time:
-                    # Extract date part and compare
                     date_part = set_time.split("T")[0]
                     today = datetime.now(timezone.utc).date()
                     alert_date = datetime.strptime(date_part, "%Y-%m-%d").date()
                     days_old = (today - alert_date).days
-                    
-                    if days_old > 1:  # More than 1 day old
-                        logger.debug(f"Skipping old alert: {channel_id}:{alert_type} (age: {days_old} days)")
+                    hours_cap_days = max(1, max_h // 24)
+                    if days_old >= hours_cap_days:
+                        logger.debug(
+                            f"Skipping old alert: {channel_id}:{alert_type} (age: {days_old} days >= {hours_cap_days})"
+                        )
                         return False
             except Exception:
-                pass  # If parsing fails, allow the alert (better safe than sorry)
+                pass
 
         # Create unique key for this alert
         alert_key = f"{channel_id}:{pipeline}:{alert_type}:{set_time}"
@@ -534,6 +539,7 @@ def init_alert_monitor(
     notification_channel: str = "",
     register_jobs: bool = True,
     check_interval_minutes: int = 2,
+    max_age_hours: Optional[int] = None,
 ) -> AlertMonitorService:
     """
     Initialize the alert monitor service.
@@ -545,17 +551,22 @@ def init_alert_monitor(
         notification_channel: Slack channel for notifications
         register_jobs: Whether to register periodic jobs
         check_interval_minutes: Polling interval (default: 2 min)
+        max_age_hours: Only notify for alerts within this many hours; None = from config (default 1)
 
     Returns:
         AlertMonitorService instance
     """
     global _alert_monitor
 
+    if max_age_hours is None:
+        max_age_hours = get_settings().ALERT_MAX_AGE_HOURS
+
     _alert_monitor = AlertMonitorService(
         tencent_client=tencent_client,
         slack_client=slack_client,
         scheduler=scheduler,
         notification_channel=notification_channel,
+        max_age_hours=max_age_hours,
     )
 
     if register_jobs and scheduler:
