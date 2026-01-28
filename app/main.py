@@ -142,17 +142,21 @@ async def lifespan(app: FastAPI):
     )
     logger.info("Notification service initialized")
 
-    # Initialize alert monitor service
-    alert_check_interval = getattr(settings, 'ALERT_CHECK_INTERVAL_MINUTES', 5)
+    # Initialize alert monitor service (periodic alert search can be disabled via ALERT_MONITOR_ENABLED)
+    alert_monitor_enabled = getattr(settings, "ALERT_MONITOR_ENABLED", False)
+    alert_check_interval = getattr(settings, "ALERT_CHECK_INTERVAL_MINUTES", 5)
     _alert_monitor = init_alert_monitor(
         tencent_client=_services.tencent_client,
         slack_client=slack_app.client,
         scheduler=_scheduler,
-        notification_channel=settings.NOTIFICATION_CHANNEL if hasattr(settings, 'NOTIFICATION_CHANNEL') else "",
-        register_jobs=True,
+        notification_channel=settings.NOTIFICATION_CHANNEL if hasattr(settings, "NOTIFICATION_CHANNEL") else "",
+        register_jobs=alert_monitor_enabled,
         check_interval_minutes=alert_check_interval,
     )
-    logger.info(f"Alert monitor service initialized ({alert_check_interval} min interval)")
+    if alert_monitor_enabled:
+        logger.info(f"Alert monitor service initialized (interval: {alert_check_interval} min)")
+    else:
+        logger.info("Alert monitor service loaded; periodic alert search is disabled (ALERT_MONITOR_ENABLED=false)")
 
     # Start Slack Socket Mode in background thread
     _slack_handler = SocketModeHandler(slack_app, settings.SLACK_APP_TOKEN)

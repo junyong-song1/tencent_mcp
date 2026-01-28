@@ -44,6 +44,10 @@ class Settings(BaseSettings):
 
     # Notification Settings
     NOTIFICATION_CHANNEL: str = Field(default="", description="Notification channel ID")
+    ALERT_MONITOR_ENABLED: bool = Field(
+        default=False,
+        description="Enable periodic alert search (StreamLive channel alerts). Off until process is finalized.",
+    )
     ALERT_CHECK_INTERVAL_MINUTES: int = Field(default=5, description="Alert check interval in minutes (1-60)")
     ALERT_MAX_AGE_HOURS: int = Field(
         default=1,
