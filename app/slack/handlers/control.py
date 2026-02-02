@@ -7,9 +7,43 @@ from typing import Dict, Optional
 
 from slack_bolt import App
 
+from app.config import get_settings
 from app.slack.ui.dashboard import DashboardUI
 
 logger = logging.getLogger(__name__)
+
+
+def _check_streamlive_permission(user_id: str, service_type: str, client, channel_id: str) -> bool:
+    """Check if user has permission to control StreamLive.
+
+    Args:
+        user_id: Slack user ID
+        service_type: Service type (StreamLive, StreamLink, etc.)
+        client: Slack client
+        channel_id: Channel ID for sending error message
+
+    Returns:
+        True if user has permission, False otherwise
+    """
+    settings = get_settings()
+
+    # StreamLink control is allowed for everyone
+    if service_type not in ["StreamLive", "MediaLive"]:
+        return True
+
+    # Check if user is in streamlink_only list
+    if settings.is_streamlink_only_user(user_id):
+        if channel_id:
+            client.chat_postEphemeral(
+                channel=channel_id,
+                user=user_id,
+                text=":no_entry: StreamLive 채널 제어 권한이 없습니다.\n"
+                     "StreamLink flow만 시작/중지할 수 있습니다.\n"
+                     "(메인/백업 전환을 위해 StreamLink를 제어해 주세요)",
+            )
+        return False
+
+    return True
 
 
 def _format_input_status_brief(input_status: Optional[Dict]) -> str:
@@ -265,6 +299,11 @@ def register(app: App, services):
         is_integrated = action_type in ["start_all", "stop_all"]
         base_action = action_type.replace("_all", "")  # start_all -> start
 
+        # Check permission for StreamLive control
+        if action_type in ["start", "stop", "restart", "start_all", "stop_all"]:
+            if not _check_streamlive_permission(user_id, service_type, client, channel_id):
+                return
+
         # Get all resources and find the parent + children
         all_resources = services.tencent_client.list_all_resources()
         parent_resource = None
@@ -397,6 +436,10 @@ def register(app: App, services):
             )
             return
 
+        # Check permission for StreamLive control
+        if not _check_streamlive_permission(user_id, service_type, client, channel_id):
+            return
+
         # Start/Stop action
         if channel_id:
             client.chat_postMessage(
@@ -442,6 +485,10 @@ def register(app: App, services):
             value_parts = value.split(":")
             service_type = value_parts[0]
             resource_id = ":".join(value_parts[1:])
+
+        # Check permission for StreamLive control (integrated control always affects StreamLive parent)
+        if not _check_streamlive_permission(user_id, service_type, client, channel_id):
+            return
 
         # Get all resources and find the parent + children
         all_resources = services.tencent_client.list_all_resources()
@@ -620,6 +667,10 @@ def register(app: App, services):
                         break
         except Exception:
             pass
+
+        # Check permission for StreamLive control
+        if service_type and not _check_streamlive_permission(user_id, service_type, client, channel_id):
+            return
 
         if channel_id:
             client.chat_postMessage(

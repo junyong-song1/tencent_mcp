@@ -32,6 +32,10 @@ class Settings(BaseSettings):
 
     # Security
     ALLOWED_USERS: str = Field(default="", description="Comma-separated allowed user IDs")
+    STREAMLINK_ONLY_USERS: str = Field(
+        default="",
+        description="Comma-separated user IDs who can only control StreamLink (not StreamLive)"
+    )
 
     # Performance Tuning
     CACHE_TTL_SECONDS: int = Field(default=120, description="Cache TTL in seconds")
@@ -74,6 +78,21 @@ class Settings(BaseSettings):
         if not self.ALLOWED_USERS:
             return []
         return [user_id.strip() for user_id in self.ALLOWED_USERS.split(",") if user_id.strip()]
+
+    @property
+    def streamlink_only_users_list(self) -> List[str]:
+        """Parse STREAMLINK_ONLY_USERS into a list."""
+        if not self.STREAMLINK_ONLY_USERS:
+            return []
+        return [user_id.strip() for user_id in self.STREAMLINK_ONLY_USERS.split(",") if user_id.strip()]
+
+    def is_streamlink_only_user(self, user_id: str) -> bool:
+        """Check if user can only control StreamLink (not StreamLive)."""
+        return user_id in self.streamlink_only_users_list
+
+    def can_control_streamlive(self, user_id: str) -> bool:
+        """Check if user can control StreamLive channels."""
+        return not self.is_streamlink_only_user(user_id)
 
 
 @lru_cache()
