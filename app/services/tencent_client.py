@@ -1662,30 +1662,22 @@ class TencentCloudClient:
         def fetch_stats(flow_id: str) -> tuple:
             return (flow_id, self.get_flow_statistics(flow_id))
 
-        # Submit tasks in parallel but limit concurrency to avoid rate limit
-        # Tencent API limit is 20 req/sec, so we fetch in batches
-        batch_size = 15  # Safe margin under 20 req/sec limit
-        for i in range(0, len(ids_to_fetch), batch_size):
-            batch = ids_to_fetch[i:i + batch_size]
-            futures = [self.executor.submit(fetch_stats, fid) for fid in batch]
+        # Submit all tasks in parallel (rate limit errors ok, cache helps on retry)
+        futures = [self.executor.submit(fetch_stats, fid) for fid in ids_to_fetch]
 
-            for future in futures:
-                try:
-                    flow_id, stats = future.result(timeout=self._timeout)
-                    results[flow_id] = stats
+        for future in futures:
+            try:
+                flow_id, stats = future.result(timeout=self._timeout)
+                results[flow_id] = stats
 
-                    # Cache the result
-                    with self._cache_lock:
-                        self._linkage_cache[f"flow_stats_{flow_id}"] = {
-                            "data": stats,
-                            "timestamp": time.time(),
-                        }
-                except Exception as e:
-                    logger.error(f"Failed to get stats in batch: {e}")
-
-            # Small delay between batches to respect rate limit
-            if i + batch_size < len(ids_to_fetch):
-                time.sleep(0.5)
+                # Cache the result
+                with self._cache_lock:
+                    self._linkage_cache[f"flow_stats_{flow_id}"] = {
+                        "data": stats,
+                        "timestamp": time.time(),
+                    }
+            except Exception as e:
+                logger.debug(f"Stats fetch skipped (rate limit ok): {e}")
 
         return results
 
