@@ -47,21 +47,33 @@ def _check_streamlive_permission(user_id: str, service_type: str, client, channe
 
 
 def _format_input_status_brief(input_status: Optional[Dict]) -> str:
-    """Format input status as brief one-line summary for '상태 확인' view."""
+    """Format input status as brief one-line summary for '상태 확인' view.
+
+    Only shows main/backup status when log-based detection is available (most reliable).
+    """
     if not input_status:
-        return "\n   입력: 확인 불가"
+        return ""
+
+    # Only show input status if we have log-based detection (most reliable)
+    log_detection = input_status.get("log_based_detection")
+    if not log_detection or not log_detection.get("last_event_type"):
+        # No reliable log-based data - don't show potentially incorrect info
+        return ""
+
     active_input = input_status.get("active_input")
     if active_input:
         emoji = ":large_green_circle:" if active_input == "main" else ":warning:"
-        return f"\n   입력: {emoji} {active_input.upper()}"
-    msg = input_status.get("message", "")
-    if "설정 필요" in str(msg) or not input_status.get("secondary_input_id"):
-        return "\n   입력: :warning: 설정 필요"
-    return f"\n   입력: {msg or '확인 불가'}"
+        last_event = log_detection.get("last_event_type", "")
+        return f"\n   입력: {emoji} {active_input.upper()} (로그 기반: {last_event})"
+
+    return ""
 
 
 def _format_input_status_text(input_status: Optional[Dict]) -> str:
     """Format input status information for display.
+
+    Only shows main/backup status when log-based detection is available (most reliable).
+    Other info (failover config, logs) is shown regardless.
 
     Args:
         input_status: Result from get_channel_input_status()
@@ -78,15 +90,13 @@ def _format_input_status_text(input_status: Optional[Dict]) -> str:
     is_input_source_redundancy = input_status.get("is_input_source_redundancy", False)
     failover_loss_threshold = input_status.get("failover_loss_threshold")
     failover_recover_behavior = input_status.get("failover_recover_behavior")
-    active_source_address = input_status.get("active_source_address")
+    log_detection = input_status.get("log_based_detection")
 
-    if active_input and not secondary_input_id and not is_input_source_redundancy:
-        text_parts.append("\n\n:warning: *입력 상태*: 설정 필요")
-        text_parts.append("\n   Failover 설정 없음")
-        text_parts.append("\n   안내: SecondaryInputId 설정 필요")
-        return "".join(text_parts)
+    # Check if we have reliable log-based detection
+    has_log_detection = log_detection and log_detection.get("last_event_type")
 
-    if active_input:
+    # Show input status ONLY if we have log-based detection (most reliable)
+    if has_log_detection and active_input:
         # Main emoji based on active input
         if active_input == "main":
             active_emoji = ":large_green_circle:"
@@ -98,76 +108,48 @@ def _format_input_status_text(input_status: Optional[Dict]) -> str:
         if input_status.get("active_input_name"):
             text_parts.append(f" ({input_status.get('active_input_name')})")
 
-        # Show verification sources
-        verification_sources = input_status.get("verification_sources", [])
-        verification_level = input_status.get("verification_level", 0)
-        if verification_sources:
-            sources_str = ", ".join(verification_sources)
-            text_parts.append(f"\n   검증: {sources_str} ({verification_level}단계)")
+        text_parts.append(" [로그 기반]")
 
-        # Show failover mode summary
-        if is_input_source_redundancy:
-            text_parts.append("\n   구성: Input Source Redundancy")
-        elif secondary_input_id:
-            text_parts.append("\n   구성: Channel-level Failover")
+        # Show log-based detection info
+        last_event = log_detection.get("last_event_type")
+        last_time = log_detection.get("last_event_time", "")
+        failover_count = log_detection.get("failover_count", 0)
+
+        if last_event:
+            # Format time (remove seconds for brevity)
+            if last_time and "T" in last_time:
+                last_time = last_time.replace("T", " ").replace("Z", " UTC")[:19]
+
+            event_emoji = ":arrows_counterclockwise:" if last_event == "PipelineFailover" else ":arrow_right:"
+            text_parts.append(f"\n   {event_emoji} 마지막 이벤트: {last_event}")
+            if last_time:
+                text_parts.append(f" ({last_time})")
+
+            if failover_count > 0:
+                text_parts.append(f"\n   :chart_with_upwards_trend: 24h 내 Failover: {failover_count}회")
+
+    # Always show failover configuration info (this is factual, not inferred)
+    config_parts = []
+
+    # Show failover mode summary
+    if is_input_source_redundancy:
+        config_parts.append("Input Source Redundancy")
+    elif secondary_input_id:
+        config_parts.append("Channel-level Failover")
+
+    # Show failover policy details when available
+    if failover_loss_threshold is not None:
+        config_parts.append(f"LossThreshold {failover_loss_threshold}ms")
+    if failover_recover_behavior:
+        config_parts.append(f"Recover {failover_recover_behavior}")
+
+    if config_parts:
+        if not text_parts:
+            text_parts.append("\n\n*Failover 구성*")
         else:
-            text_parts.append("\n   구성: Failover 미설정")
-
-        # Show failover policy details when available
-        if failover_loss_threshold is not None or failover_recover_behavior:
-            policy_parts = []
-            if failover_loss_threshold is not None:
-                policy_parts.append(f"LossThreshold {failover_loss_threshold}ms")
-            if failover_recover_behavior:
-                policy_parts.append(f"Recover {failover_recover_behavior}")
-            text_parts.append(f"\n   정책: {' / '.join(policy_parts)}")
-
-        # Show active source address (shortened)
-        if active_source_address:
-            short_addr = (
-                f"{active_source_address[:60]}..."
-                if len(active_source_address) > 60
-                else active_source_address
-            )
-            text_parts.append(f"\n   활성 소스: {short_addr}")
-
-        # Show log-based detection info (MOST RELIABLE)
-        log_detection = input_status.get("log_based_detection")
-        if log_detection:
-            last_event = log_detection.get("last_event_type")
-            last_time = log_detection.get("last_event_time", "")
-            failover_count = log_detection.get("failover_count", 0)
-
-            if last_event:
-                # Format time (remove seconds for brevity)
-                if last_time and "T" in last_time:
-                    last_time = last_time.replace("T", " ").replace("Z", " UTC")[:19]
-
-                event_emoji = ":arrows_counterclockwise:" if last_event == "PipelineFailover" else ":arrow_right:"
-                text_parts.append(f"\n   {event_emoji} 마지막 이벤트: {last_event}")
-                if last_time:
-                    text_parts.append(f" ({last_time})")
-
-                if failover_count > 0:
-                    text_parts.append(f"\n   :chart_with_upwards_trend: 24h 내 Failover: {failover_count}회")
-
-        # Show StreamPackage verification if available
-        sp_verification = input_status.get("streampackage_verification")
-        if sp_verification and sp_verification.get("active_input"):
-            text_parts.append(f"\n   :package: StreamPackage: {sp_verification.get('active_input', '').upper()}")
-
-        # Show CSS verification if available
-        css_verification = input_status.get("css_verification")
-        if css_verification:
-            stream_flowing = css_verification.get("stream_flowing", None)
-            if stream_flowing is True:
-                text_parts.append("\n   :white_check_mark: 스트림 상태: 정상")
-            elif stream_flowing is False:
-                text_parts.append("\n   :x: 스트림 상태: 확인 필요")
-            else:
-                text_parts.append("\n   :grey_question: 스트림 상태: 확인 불가")
-    else:
-        text_parts.append(f"\n\n:question: *입력 상태*: {input_status.get('message', '확인 불가')}")
+            text_parts.append("\n   구성: " + " / ".join(config_parts[:2]))
+            if len(config_parts) > 2:
+                text_parts.append(f"\n   정책: {' / '.join(config_parts[2:])}")
 
     return "".join(text_parts)
 
