@@ -1628,7 +1628,9 @@ class TencentCloudClient:
             return None
 
     def get_flow_statistics_batch(self, flow_ids: List[str]) -> Dict[str, Optional[Dict]]:
-        """Get statistics for multiple flows in parallel.
+        """Get statistics for multiple flows in parallel with caching.
+
+        Uses a 60-second cache to avoid API rate limits (20 req/sec).
 
         Args:
             flow_ids: List of flow IDs
@@ -1637,18 +1639,53 @@ class TencentCloudClient:
             Dict mapping flow_id to statistics (or None if failed)
         """
         results = {}
+        ids_to_fetch = []
+        cache_ttl = 60  # 60 seconds cache for flow stats
+
+        # Check cache first
+        now = time.time()
+        with self._cache_lock:
+            for flow_id in flow_ids:
+                cache_key = f"flow_stats_{flow_id}"
+                cached = self._linkage_cache.get(cache_key)
+                if cached and (now - cached["timestamp"] < cache_ttl):
+                    results[flow_id] = cached["data"]
+                else:
+                    ids_to_fetch.append(flow_id)
+
+        if not ids_to_fetch:
+            logger.debug(f"All {len(flow_ids)} flow stats from cache")
+            return results
+
+        logger.info(f"Fetching stats for {len(ids_to_fetch)} flows ({len(flow_ids) - len(ids_to_fetch)} from cache)")
 
         def fetch_stats(flow_id: str) -> tuple:
             return (flow_id, self.get_flow_statistics(flow_id))
 
-        # Submit all tasks in parallel
-        futures = [self.executor.submit(fetch_stats, fid) for fid in flow_ids]
-        for future in futures:
-            try:
-                flow_id, stats = future.result(timeout=self._timeout)
-                results[flow_id] = stats
-            except Exception as e:
-                logger.error(f"Failed to get stats in batch: {e}")
+        # Submit tasks in parallel but limit concurrency to avoid rate limit
+        # Tencent API limit is 20 req/sec, so we fetch in batches
+        batch_size = 15  # Safe margin under 20 req/sec limit
+        for i in range(0, len(ids_to_fetch), batch_size):
+            batch = ids_to_fetch[i:i + batch_size]
+            futures = [self.executor.submit(fetch_stats, fid) for fid in batch]
+
+            for future in futures:
+                try:
+                    flow_id, stats = future.result(timeout=self._timeout)
+                    results[flow_id] = stats
+
+                    # Cache the result
+                    with self._cache_lock:
+                        self._linkage_cache[f"flow_stats_{flow_id}"] = {
+                            "data": stats,
+                            "timestamp": time.time(),
+                        }
+                except Exception as e:
+                    logger.error(f"Failed to get stats in batch: {e}")
+
+            # Small delay between batches to respect rate limit
+            if i + batch_size < len(ids_to_fetch):
+                time.sleep(0.5)
 
         return results
 
