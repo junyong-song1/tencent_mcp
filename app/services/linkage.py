@@ -1,7 +1,7 @@
 """Service for determining linkage between StreamLink and StreamLive resources."""
 import logging
 import re
-from typing import Dict, List, Set
+from typing import Any, Dict, List, Set
 
 from app.config import get_settings
 
@@ -19,6 +19,9 @@ class LinkageMatcher:
         "1935", "57716", "live", "http", "https"
     ])
 
+    # Query parameter keys that contain stream keys
+    STREAM_KEY_PARAMS = frozenset(["streamid", "stream", "key", "streamkey"])
+
     @classmethod
     def normalize_url(cls, url: str) -> str:
         """Normalize URL for comparison."""
@@ -27,17 +30,49 @@ class LinkageMatcher:
         return re.sub(r"/+", "/", url.strip().lower()).strip("/")
 
     @classmethod
+    def extract_query_params(cls, url: str) -> Dict[str, str]:
+        """Extract query parameters from URL."""
+        params = {}
+        if "?" in url:
+            query_part = url.split("?", 1)[1]
+            for param in query_part.split("&"):
+                if "=" in param:
+                    key, value = param.split("=", 1)
+                    params[key.lower()] = value
+        return params
+
+    @classmethod
     def extract_url_parts(cls, url: str) -> List[str]:
         """Extract meaningful parts from URL."""
         if not url:
             return []
+        # Remove query string for path parsing
         url_clean = url.strip().lower()
-        parts = re.split(r"[:/@?]", url_clean)
+        if "?" in url_clean:
+            url_clean = url_clean.split("?")[0]
+        parts = re.split(r"[:/@]", url_clean)
         return [p for p in parts if p and p not in cls.IGNORE_TOKENS]
 
     @classmethod
     def get_stream_key(cls, url: str) -> str:
-        """Extract the stream key from URL."""
+        """Extract the stream key from URL.
+
+        Handles:
+        - Path-based: rtmp://host/app/stream_key
+        - Query-based: srt://host:port?streamid=stream_key
+        """
+        if not url:
+            return ""
+
+        url_lower = url.lower()
+
+        # First, try to extract from query parameters (SRT style)
+        params = cls.extract_query_params(url)
+        for param_key in cls.STREAM_KEY_PARAMS:
+            if param_key in params:
+                return params[param_key]
+
+        # Fall back to path-based extraction (RTMP style)
         parts = cls.extract_url_parts(url)
         return parts[-1] if parts else ""
 
@@ -50,16 +85,24 @@ class LinkageMatcher:
         out_norm = cls.normalize_url(output_url)
         in_norm = cls.normalize_url(input_endpoint)
 
+        # Exact URL match
         if out_norm == in_norm:
+            logger.debug(f"Exact URL match: {output_url} == {input_endpoint}")
             return True
 
+        # Stream key match
         out_key = cls.get_stream_key(output_url)
         in_key = cls.get_stream_key(input_endpoint)
 
         if out_key and in_key:
             settings = get_settings()
-            if len(out_key) >= settings.MIN_STREAM_KEY_LENGTH and out_key == in_key:
+            min_len = settings.MIN_STREAM_KEY_LENGTH
+
+            if len(out_key) >= min_len and out_key == in_key:
+                logger.debug(f"Stream key match: {out_key} (from {output_url}) == {in_key} (from {input_endpoint})")
                 return True
+            elif out_key == in_key:
+                logger.debug(f"Key match but too short ({len(out_key)} < {min_len}): {out_key}")
 
         return False
 
@@ -75,16 +118,26 @@ class LinkageMatcher:
         endpoints = live_channel.get("input_endpoints", [])
         linked = []
 
+        channel_name = live_channel.get("name", live_channel.get("id", "unknown"))
+        logger.debug(f"Finding links for StreamLive '{channel_name}' with {len(endpoints)} endpoints")
+
+        if not endpoints:
+            logger.debug(f"  No input_endpoints for channel '{channel_name}'")
+
         for flow in link_flows:
             if flow.get("id") in exclude_ids:
                 continue
 
             output_urls = flow.get("output_urls", [])
+            flow_name = flow.get("name", flow.get("id", "unknown"))
             is_linked = False
 
             for out_url in output_urls:
                 for endpoint in endpoints:
                     if cls.is_url_match(out_url, endpoint):
+                        logger.debug(f"  MATCH: Flow '{flow_name}' -> Channel '{channel_name}'")
+                        logger.debug(f"    output_url: {out_url}")
+                        logger.debug(f"    input_endpoint: {endpoint}")
                         is_linked = True
                         break
                 if is_linked:
@@ -93,6 +146,7 @@ class LinkageMatcher:
             if is_linked:
                 linked.append(flow)
 
+        logger.debug(f"  Found {len(linked)} linked flows for '{channel_name}'")
         return linked
 
 
