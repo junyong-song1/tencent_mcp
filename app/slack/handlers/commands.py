@@ -74,11 +74,13 @@ def register(app: App, services):
     def handle_tencent_command(ack, body, client, respond):
         """Handle /tencent slash command."""
         ack()
+        logger.info(f"/tencent command received")
 
         command_text = body.get("text", "").strip()
         channel_id = body["channel_id"]
         user_id = body["user_id"]
         trigger_id = body["trigger_id"]
+        logger.info(f"/tencent: user={user_id}, text='{command_text}')")
 
         # Check user permission
         settings = services.settings
@@ -101,9 +103,11 @@ def register(app: App, services):
         if sub_cmd in ["list", "ls", "dashboard", ""]:
             try:
                 # Show loading modal
+                logger.info(f"/tencent: Opening loading modal...")
                 loading_view = DashboardUI.create_loading_modal(channel_id)
                 resp = client.views_open(trigger_id=trigger_id, view=loading_view)
                 view_id = resp["view"]["id"]
+                logger.info(f"/tencent: Loading modal opened, view_id={view_id}")
 
                 # Parse initial keyword
                 initial_keyword = ""
@@ -113,15 +117,39 @@ def register(app: App, services):
                 # Load resources in background
                 def async_load():
                     try:
+                        logger.info(f"/tencent: Fetching resources...")
                         channels = services.tencent_client.list_all_resources()
+                        logger.info(f"/tencent: Got {len(channels)} resources")
+
+                        # Fetch flow statistics for running StreamLink flows
+                        flow_stats = {}
+                        try:
+                            running_flows = [
+                                r for r in channels
+                                if r.get("service") == "StreamLink" and r.get("status") == "running"
+                            ]
+                            if running_flows:
+                                flow_ids = [f.get("id") for f in running_flows if f.get("id")]
+                                # Limit to first 10 flows to avoid performance issues
+                                flow_ids = flow_ids[:50]
+                                if flow_ids:
+                                    logger.info(f"/tencent: Fetching stats for {len(flow_ids)} running flows...")
+                                    flow_stats = services.tencent_client.get_flow_statistics_batch(flow_ids)
+                        except Exception as e:
+                            logger.warning(f"/tencent: Failed to fetch flow stats: {e}")
+
+                        logger.info(f"/tencent: Building modal...")
                         modal_view = DashboardUI.create_dashboard_modal(
                             channels=channels,
                             keyword=initial_keyword,
                             channel_id=channel_id,
+                            flow_stats=flow_stats,
                         )
+                        logger.info(f"/tencent: Updating modal view...")
                         client.views_update(view_id=view_id, view=modal_view)
+                        logger.info(f"/tencent: Modal updated successfully")
                     except Exception as e:
-                        logger.error(f"Async dashboard load failed: {e}")
+                        logger.error(f"Async dashboard load failed: {e}", exc_info=True)
                         client.views_update(
                             view_id=view_id,
                             view={
@@ -165,6 +193,69 @@ def register(app: App, services):
                 logger.error(f"Error opening schedule modal: {e}")
                 respond(f"스케줄 화면 로드 중 오류 발생: {str(e)}")
 
+        elif sub_cmd in ["stats", "통계", "stat"]:
+            # /tencent stats <flow_name or flow_id>
+            if len(cmd_parts) < 2:
+                respond(
+                    ":information_source: *사용법*: `/tencent stats <flow_name 또는 flow_id>`\n"
+                    "예시: `/tencent stats my_flow_name`"
+                )
+                return
+
+            search_term = " ".join(cmd_parts[1:])
+            respond(f":hourglass_flowing_sand: `{search_term}` Flow 통계를 가져오고 있습니다...")
+
+            def async_fetch_stats():
+                try:
+                    # Find the flow by name or ID
+                    all_resources = services.tencent_client.list_all_resources()
+                    flows = [r for r in all_resources if r.get("service") == "StreamLink"]
+
+                    # Find matching flow
+                    matched_flow = None
+                    search_lower = search_term.lower()
+
+                    for flow in flows:
+                        flow_id = flow.get("id", "")
+                        flow_name = flow.get("name", "")
+                        if flow_id == search_term or flow_name.lower() == search_lower:
+                            matched_flow = flow
+                            break
+                        elif search_lower in flow_name.lower():
+                            matched_flow = flow
+
+                    if not matched_flow:
+                        client.chat_postMessage(
+                            channel=channel_id,
+                            text=f":x: Flow를 찾을 수 없습니다: `{search_term}`\n검색어를 확인해 주세요."
+                        )
+                        return
+
+                    flow_id = matched_flow.get("id")
+                    flow_name = matched_flow.get("name")
+                    flow_status = matched_flow.get("status", "unknown")
+
+                    # Get flow statistics
+                    stats = services.tencent_client.get_flow_statistics(flow_id)
+
+                    # Build response message
+                    blocks = _build_flow_stats_blocks(flow_name, flow_id, flow_status, stats)
+
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        blocks=blocks,
+                        text=f"Flow 통계: {flow_name}",
+                    )
+
+                except Exception as e:
+                    logger.error(f"Failed to fetch flow stats: {e}", exc_info=True)
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text=f":x: Flow 통계 조회 중 오류 발생: {str(e)}"
+                    )
+
+            threading.Thread(target=async_fetch_stats, daemon=True).start()
+
         elif sub_cmd == "help":
             respond(_get_help_text())
 
@@ -179,6 +270,7 @@ def _get_help_text() -> str:
 *사용법:*
 - `/tencent` 또는 `/tencent list` - 대시보드 열기
 - `/tencent list <검색어>` - 채널 검색
+- `/tencent stats <flow_name>` - Flow 실시간 통계 조회
 - `/tencent schedule` (또는 `일정`, `스케줄`) - 스케줄 관리 화면 열기
 - `/tencent help` - 도움말 보기
 
@@ -186,3 +278,107 @@ def _get_help_text() -> str:
 - 채널 탭: StreamLive/StreamLink 리소스 조회 및 제어
 - 스케줄 탭: 방송 스케줄 관리 (추가/수정/삭제)
 """
+
+
+def _build_flow_stats_blocks(flow_name: str, flow_id: str, status: str, stats: dict) -> list:
+    """Build Slack blocks for flow statistics display."""
+    status_emoji = {
+        "running": ":large_green_circle:",
+        "stopped": ":red_circle:",
+        "idle": ":white_circle:",
+        "error": ":warning:",
+    }.get(status, ":grey_question:")
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"Flow: {flow_name}", "emoji": True}
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Flow ID:*\n`{flow_id}`"},
+                {"type": "mrkdwn", "text": f"*상태:*\n{status_emoji} {status}"},
+            ]
+        },
+        {"type": "divider"},
+    ]
+
+    if not stats:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": ":information_source: 통계 정보를 가져올 수 없습니다.\nFlow가 실행 중이 아니거나 데이터가 없을 수 있습니다."}
+        })
+        return blocks
+
+    # Input statistics section
+    input_text = "*:inbox_tray: 입력 통계*\n"
+    bitrate_mbps = stats.get("bitrate_mbps", "0")
+    fps = stats.get("fps", 0)
+    state = stats.get("state", "unknown")
+    connected_time = stats.get("connected_time", "")
+
+    input_text += f"- 비트레이트: *{bitrate_mbps} Mbps*\n"
+    if fps > 0:
+        input_text += f"- 프레임레이트: *{fps} fps*\n"
+    input_text += f"- 연결 상태: {state}\n"
+    if connected_time:
+        input_text += f"- 연결 시간: {connected_time}\n"
+
+    # Video/Audio codec info if available
+    if stats.get("video_codec"):
+        input_text += f"- 비디오 코덱: {stats['video_codec']}\n"
+    if stats.get("audio_codec"):
+        input_text += f"- 오디오 코덱: {stats['audio_codec']}\n"
+    if stats.get("resolution"):
+        input_text += f"- 해상도: {stats['resolution']}\n"
+
+    blocks.append({
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": input_text}
+    })
+
+    # Input details (multiple sources)
+    inputs = stats.get("inputs", [])
+    if inputs:
+        blocks.append({"type": "divider"})
+        for idx, inp in enumerate(inputs[:3]):  # Limit to 3 inputs
+            inp_bitrate = inp.get("bitrate_mbps", "0")
+            inp_state = inp.get("state", "unknown")
+            inp_id = inp.get("input_id", f"Input {idx+1}")
+
+            state_emoji = ":large_green_circle:" if inp_state.lower() in ["running", "connected"] else ":white_circle:"
+            blocks.append({
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": f"{state_emoji} *Input {inp_id}*: {inp_bitrate} Mbps ({inp_state})"}
+                ]
+            })
+
+    # Output statistics section
+    outputs = stats.get("outputs", [])
+    if outputs:
+        blocks.append({"type": "divider"})
+        output_text = "*:outbox_tray: 출력 통계*\n"
+        for idx, out in enumerate(outputs[:3]):  # Limit to 3 outputs
+            out_bitrate = out.get("bitrate_mbps", "0")
+            out_state = out.get("state", "unknown")
+            out_id = out.get("output_id", f"Output {idx+1}")
+            output_text += f"- Output {out_id}: {out_bitrate} Mbps ({out_state})\n"
+
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": output_text}
+        })
+
+    # Timestamp
+    blocks.append({"type": "divider"})
+    from datetime import datetime
+    blocks.append({
+        "type": "context",
+        "elements": [
+            {"type": "mrkdwn", "text": f"조회 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"}
+        ]
+    })
+
+    return blocks

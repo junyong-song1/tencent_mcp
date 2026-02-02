@@ -64,7 +64,7 @@ def register(app: App, services):
 
     def async_update_modal(
         client, view_id, channel_id, service_filter, status_filter, keyword,
-        clear_cache=False, page=0
+        clear_cache=False, page=0, fetch_flow_stats=True
     ):
         """Update modal asynchronously."""
         def _update():
@@ -73,6 +73,24 @@ def register(app: App, services):
                     services.tencent_client.clear_cache()
 
                 channels = services.tencent_client.list_all_resources()
+
+                # Fetch flow statistics for running StreamLink flows
+                flow_stats = {}
+                if fetch_flow_stats:
+                    try:
+                        running_flows = [
+                            r for r in channels
+                            if r.get("service") == "StreamLink" and r.get("status") == "running"
+                        ]
+                        if running_flows:
+                            flow_ids = [f.get("id") for f in running_flows if f.get("id")]
+                            # Limit to first 10 flows to avoid performance issues
+                            flow_ids = flow_ids[:50]
+                            if flow_ids:
+                                flow_stats = services.tencent_client.get_flow_statistics_batch(flow_ids)
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch flow stats: {e}")
+
                 modal_view = DashboardUI.create_dashboard_modal(
                     channels=channels,
                     service_filter=service_filter,
@@ -80,6 +98,7 @@ def register(app: App, services):
                     keyword=keyword,
                     channel_id=channel_id,
                     page=page,
+                    flow_stats=flow_stats,
                 )
                 client.views_update(view_id=view_id, view=modal_view)
             except Exception as e:

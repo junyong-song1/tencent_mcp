@@ -1,6 +1,6 @@
 """Dashboard UI components."""
 import json
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from app.config import get_settings
 from app.services.linkage import group_and_filter_resources
@@ -44,6 +44,7 @@ class DashboardUI:
         keyword: str = "",
         channel_id: str = "",
         page: int = 0,
+        flow_stats: Optional[Dict[str, Dict]] = None,
     ) -> dict:
         """Create the main dashboard modal view."""
         settings = get_settings()
@@ -94,7 +95,7 @@ class DashboardUI:
             for group in page_groups:
                 parent = group["parent"]
                 children = group["children"]
-                blocks.extend(cls._create_resource_group_blocks(parent, children))
+                blocks.extend(cls._create_resource_group_blocks(parent, children, flow_stats))
                 if len(blocks) > 95:
                     break
 
@@ -214,7 +215,7 @@ class DashboardUI:
 
     @classmethod
     def _create_resource_group_blocks(
-        cls, parent: Dict, children: List[Dict]
+        cls, parent: Dict, children: List[Dict], flow_stats: Optional[Dict[str, Dict]] = None
     ) -> List[dict]:
         """Create blocks for a resource group."""
         blocks = []
@@ -254,6 +255,27 @@ class DashboardUI:
                 child_name = child.get("name", "Unknown")
                 child_service_emoji = get_service_emoji(child_service)
 
+                # Build child text with metrics if available
+                child_text = f"  └ {child_status_emoji} {child_service_emoji} *{child_name}*"
+
+                # Add metrics for running flows
+                if child_status_text == "running" and flow_stats and child_id in flow_stats:
+                    stats = flow_stats[child_id]
+                    if stats:
+                        metrics_parts = []
+                        bitrate = stats.get("bitrate_mbps", "0")
+                        fps = stats.get("fps", 0)
+
+                        if float(bitrate) > 0:
+                            metrics_parts.append(f"{bitrate}Mbps")
+                        if fps > 0:
+                            metrics_parts.append(f"{fps}fps")
+
+                        if metrics_parts:
+                            child_text += f"\n      :bar_chart: {' / '.join(metrics_parts)}"
+
+                child_text += f" | 상태: {child_status_text}"
+
                 # Create child control button
                 child_btn = cls._create_child_control_button(child)
 
@@ -261,7 +283,7 @@ class DashboardUI:
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"  └ {child_status_emoji} {child_service_emoji} *{child_name}* | 상태: {child_status_text}"
+                        "text": child_text,
                     },
                     "accessory": child_btn,
                 })

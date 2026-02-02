@@ -1444,6 +1444,214 @@ class TencentCloudClient:
             logger.error(f"Failed to get StreamPackage channel details: {e}")
             return None
 
+    def get_flow_statistics(self, flow_id: str) -> Optional[Dict]:
+        """Get real-time statistics for a StreamLink flow.
+
+        Uses DescribeStreamLinkFlowRealtimeStatus to get current bitrate, fps, codec, resolution.
+
+        Args:
+            flow_id: StreamLink flow ID
+
+        Returns:
+            Dict with statistics:
+                - bitrate: Current bitrate in bps
+                - bitrate_mbps: Current bitrate in Mbps (formatted)
+                - fps: Frame rate
+                - state: Connection state
+                - video_codec: Video codec (from media stats if available)
+                - audio_codec: Audio codec (from media stats if available)
+                - resolution: Video resolution (from media stats if available)
+                - connected_time: Connection duration
+        """
+        try:
+            client = self._get_mdc_client()
+
+            # Get realtime status (most current data)
+            req = mdc_models.DescribeStreamLinkFlowRealtimeStatusRequest()
+            req.FlowId = flow_id
+
+            resp = client.DescribeStreamLinkFlowRealtimeStatus(req)
+
+            result = {
+                "flow_id": flow_id,
+                "bitrate": 0,
+                "bitrate_mbps": "0",
+                "fps": 0,
+                "state": "unknown",
+                "video_codec": None,
+                "audio_codec": None,
+                "resolution": None,
+                "connected_time": None,
+                "inputs": [],
+                "outputs": [],
+            }
+
+            if hasattr(resp, "Datas") and resp.Datas:
+                for item in resp.Datas:
+                    # CommonStatus contains bitrate and state
+                    common_status = getattr(item, "CommonStatus", None)
+                    item_type = getattr(item, "Type", "")
+                    input_id = getattr(item, "InputId", "")
+                    output_id = getattr(item, "OutputId", "")
+
+                    if common_status:
+                        bitrate = getattr(common_status, "Bitrate", 0) or 0
+                        state = getattr(common_status, "State", "unknown")
+                        connected_time = getattr(common_status, "ConnectedTime", "")
+
+                        item_data = {
+                            "type": item_type,
+                            "input_id": input_id,
+                            "output_id": output_id,
+                            "bitrate": bitrate,
+                            "bitrate_mbps": f"{bitrate / 1_000_000:.2f}" if bitrate else "0",
+                            "state": state,
+                            "connected_time": connected_time,
+                        }
+
+                        # Categorize by type
+                        if item_type.lower() == "input":
+                            result["inputs"].append(item_data)
+                            # Use input stats as primary (sum up if multiple)
+                            result["bitrate"] += bitrate
+                            if state != "unknown" and result["state"] == "unknown":
+                                result["state"] = state
+                            if connected_time and not result["connected_time"]:
+                                result["connected_time"] = connected_time
+                        elif item_type.lower() == "output":
+                            result["outputs"].append(item_data)
+
+                    # Check protocol-specific status for additional info
+                    protocol = getattr(item, "Protocol", "")
+                    if protocol == "SRT":
+                        srt_status = getattr(item, "SRTStatus", None)
+                        if srt_status:
+                            # SRT provides RTT, packet loss info
+                            item_data["rtt"] = getattr(srt_status, "RTT", None)
+                            item_data["recv_packet_loss_rate"] = getattr(srt_status, "RecvPacketLossRate", None)
+                            item_data["send_packet_loss_rate"] = getattr(srt_status, "SendPacketLossRate", None)
+
+                # If input bitrate is 0, use output bitrate (some flows only report output)
+                if result["bitrate"] == 0 and result["outputs"]:
+                    output_bitrate = sum(o.get("bitrate", 0) for o in result["outputs"])
+                    if output_bitrate > 0:
+                        result["bitrate"] = output_bitrate
+                        # Also get state from output if input state is unknown
+                        if result["state"] == "unknown":
+                            for o in result["outputs"]:
+                                if o.get("state") and o["state"] != "unknown":
+                                    result["state"] = o["state"]
+                                    break
+
+                # Calculate total bitrate in Mbps
+                if result["bitrate"] > 0:
+                    result["bitrate_mbps"] = f"{result['bitrate'] / 1_000_000:.2f}"
+
+            # Try to get media info (codec, resolution) from statistics API
+            try:
+                from datetime import datetime, timedelta, timezone
+
+                media_req = mdc_models.DescribeStreamLinkFlowMediaStatisticsRequest()
+                media_req.FlowId = flow_id
+                media_req.Type = "Input"
+                media_req.Period = "5s"  # 5 second granularity
+                media_req.StartTime = (datetime.now(timezone.utc) - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                media_req.EndTime = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+                media_resp = client.DescribeStreamLinkFlowMediaStatistics(media_req)
+
+                if hasattr(media_resp, "Infos") and media_resp.Infos:
+                    # Get the most recent media info
+                    for info in media_resp.Infos:
+                        video = getattr(info, "Video", None)
+                        audio = getattr(info, "Audio", None)
+
+                        if video:
+                            fps = getattr(video, "Fps", 0) or 0
+                            if fps > 0 and result["fps"] == 0:
+                                result["fps"] = fps
+
+                        # Try to get codec info from statistics API
+                        # Note: The DescribeStreamLinkFlowStatistics may provide more detail
+                        break  # Only need the most recent
+            except Exception as e:
+                logger.debug(f"Could not get media statistics for flow {flow_id}: {e}")
+
+            # Try to get additional stats (fps, codec) from statistics API
+            try:
+                from datetime import datetime, timedelta, timezone
+
+                stats_req = mdc_models.DescribeStreamLinkFlowStatisticsRequest()
+                stats_req.FlowId = flow_id
+                stats_req.Type = "Input"
+                stats_req.Period = "5s"
+                stats_req.StartTime = (datetime.now(timezone.utc) - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                stats_req.EndTime = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+                stats_resp = client.DescribeStreamLinkFlowStatistics(stats_req)
+
+                if hasattr(stats_resp, "Infos") and stats_resp.Infos:
+                    # Get the most recent stats
+                    for info_arr in stats_resp.Infos:
+                        flow_stats_list = getattr(info_arr, "FlowStatistics", [])
+                        if flow_stats_list:
+                            # Get most recent entry
+                            latest = flow_stats_list[-1] if isinstance(flow_stats_list, list) else flow_stats_list
+
+                            video = getattr(latest, "Video", None)
+                            audio = getattr(latest, "Audio", None)
+
+                            if video:
+                                fps = getattr(video, "Fps", 0) or 0
+                                if fps > 0 and result["fps"] == 0:
+                                    result["fps"] = fps
+                                rate = getattr(video, "Rate", 0) or 0
+                                if rate > 0 and result["bitrate"] == 0:
+                                    result["bitrate"] = rate
+                                    result["bitrate_mbps"] = f"{rate / 1_000_000:.2f}"
+
+                            if audio:
+                                audio_rate = getattr(audio, "Rate", 0) or 0
+                                # Could add audio rate to total if needed
+                            break  # Only need most recent
+            except Exception as e:
+                logger.debug(f"Could not get flow statistics for flow {flow_id}: {e}")
+
+            logger.info(f"Flow {flow_id} stats: {result['bitrate_mbps']} Mbps, {result['fps']} fps, state={result['state']}")
+            return result
+
+        except TencentCloudSDKException as e:
+            logger.error(f"Failed to get flow statistics for {flow_id}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error getting flow statistics for {flow_id}: {e}")
+            return None
+
+    def get_flow_statistics_batch(self, flow_ids: List[str]) -> Dict[str, Optional[Dict]]:
+        """Get statistics for multiple flows in parallel.
+
+        Args:
+            flow_ids: List of flow IDs
+
+        Returns:
+            Dict mapping flow_id to statistics (or None if failed)
+        """
+        results = {}
+
+        def fetch_stats(flow_id: str) -> tuple:
+            return (flow_id, self.get_flow_statistics(flow_id))
+
+        # Submit all tasks in parallel
+        futures = [self.executor.submit(fetch_stats, fid) for fid in flow_ids]
+        for future in futures:
+            try:
+                flow_id, stats = future.result(timeout=self._timeout)
+                results[flow_id] = stats
+            except Exception as e:
+                logger.error(f"Failed to get stats in batch: {e}")
+
+        return results
+
     def list_css_domains(self) -> List[Dict]:
         """List CSS (Cloud Streaming Service) domains."""
         if not CSS_AVAILABLE:
@@ -2373,6 +2581,12 @@ class AsyncTencentClient:
 
     async def search_resources(self, keywords: List[str]) -> List[Dict]:
         return await asyncio.to_thread(self._sync.search_resources, keywords)
+
+    async def get_flow_statistics(self, flow_id: str) -> Optional[Dict]:
+        return await asyncio.to_thread(self._sync.get_flow_statistics, flow_id)
+
+    async def get_flow_statistics_batch(self, flow_ids: List[str]) -> Dict[str, Optional[Dict]]:
+        return await asyncio.to_thread(self._sync.get_flow_statistics_batch, flow_ids)
 
     def clear_cache(self) -> None:
         self._sync.clear_cache()
