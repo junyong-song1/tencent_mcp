@@ -18,6 +18,9 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+from app.services.alert_utils import CRITICAL_ALERTS, WARNING_ALERTS, INFO_ALERTS
+
+
 class AlertMonitorService:
     """
     Monitor StreamLive/StreamLink channels for alerts and send notifications.
@@ -28,10 +31,10 @@ class AlertMonitorService:
     - Slack notifications for new alerts
     """
 
-    # Alert types to monitor
-    CRITICAL_ALERTS = {"No Input Data", "PipelineFailover"}
-    WARNING_ALERTS = {"PipelineRecover", "StreamStop"}
-    INFO_ALERTS = {"StreamStart"}
+    # Re-export for backwards compatibility
+    CRITICAL_ALERTS = CRITICAL_ALERTS
+    WARNING_ALERTS = WARNING_ALERTS
+    INFO_ALERTS = INFO_ALERTS
 
     def __init__(
         self,

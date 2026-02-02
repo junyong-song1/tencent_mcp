@@ -2232,7 +2232,7 @@ class TencentCloudClient:
             Dict with integrated logs from all services
         """
         try:
-            from app.services.linkage import LinkageService
+            from app.services.linkage import ResourceHierarchyBuilder
 
             # Get StreamLive logs
             streamlive_logs = []
@@ -2249,12 +2249,11 @@ class TencentCloudClient:
             streamlink_logs = []
             if not services or "StreamLink" in services:
                 resources = self.list_all_resources()
-                linkage_service = LinkageService()
-                hierarchy = linkage_service.build_hierarchy(resources)
+                hierarchy = ResourceHierarchyBuilder.build_hierarchy(resources)
 
                 for h in hierarchy:
-                    if h.parent.get("id") == channel_id:
-                        for child in h.children:
+                    if h["parent"].get("id") == channel_id:
+                        for child in h["children"]:
                             flow_id = child.get("id")
                             if flow_id:
                                 flow_logs = self.get_streamlink_flow_logs(

@@ -10,6 +10,8 @@ from typing import List, Dict, Any
 from mcp.server import Server
 from mcp.types import Resource, TextContent
 
+from app.services.alert_utils import get_channel_alerts
+
 logger = logging.getLogger(__name__)
 
 
@@ -80,6 +82,18 @@ def register_resources(server: Server, get_tencent_client, get_schedule_manager)
                 description="Integrated logs from StreamLive, StreamLink, StreamPackage, and CSS",
                 mimeType="application/json",
             ),
+            Resource(
+                uri="tencent://alerts",
+                name="Current Alerts",
+                description="Current alerts from all running StreamLive channels. Shows active alerts that haven't been cleared.",
+                mimeType="application/json",
+            ),
+            Resource(
+                uri="tencent://system_status",
+                name="System Status",
+                description="Overall system health summary including channel counts by status, active alerts, and recent issues.",
+                mimeType="application/json",
+            ),
         ]
     
     @server.read_resource()
@@ -118,14 +132,13 @@ def register_resources(server: Server, get_tencent_client, get_schedule_manager)
         
         elif uri == "tencent://resources/hierarchy":
             # Build hierarchy with linkage
-            from app.services.linkage import LinkageService
+            from app.services.linkage import ResourceHierarchyBuilder
             resources = client.list_all_resources()
-            linkage_service = LinkageService()
-            hierarchy = linkage_service.build_hierarchy(resources)
+            hierarchy = ResourceHierarchyBuilder.build_hierarchy(resources)
             return json.dumps({
                 "type": "resource_hierarchy",
                 "parent_count": len(hierarchy),
-                "hierarchy": [h.to_dict() for h in hierarchy],
+                "hierarchy": hierarchy,  # Already a list of dicts
             }, indent=2, ensure_ascii=False)
         
         elif uri == "tencent://schedules/upcoming":
@@ -181,5 +194,113 @@ def register_resources(server: Server, get_tencent_client, get_schedule_manager)
                 **logs_data,
             }, indent=2, ensure_ascii=False)
         
+        elif uri == "tencent://alerts":
+            # Get all running channels and their alerts
+            resources = client.list_all_resources()
+            running_channels = [
+                r for r in resources
+                if r.get("service") == "StreamLive" and r.get("status") == "running"
+            ]
+
+            all_alerts = []
+            for channel in running_channels:
+                channel_id = channel.get("id", "")
+                channel_name = channel.get("name", "")
+                try:
+                    alerts = get_channel_alerts(client, channel_id, channel_name)
+                    all_alerts.extend(alerts)
+                except Exception as e:
+                    logger.error(f"Failed to get alerts for channel {channel_id}: {e}")
+
+            # Categorize alerts by severity
+            critical_alerts = [a for a in all_alerts if a.get("severity") == "critical"]
+            warning_alerts = [a for a in all_alerts if a.get("severity") == "warning"]
+            info_alerts = [a for a in all_alerts if a.get("severity") == "info"]
+
+            return json.dumps({
+                "type": "alerts",
+                "summary": {
+                    "total_alerts": len(all_alerts),
+                    "critical": len(critical_alerts),
+                    "warning": len(warning_alerts),
+                    "info": len(info_alerts),
+                    "channels_checked": len(running_channels),
+                },
+                "critical_alerts": critical_alerts,
+                "warning_alerts": warning_alerts,
+                "info_alerts": info_alerts,
+                "all_alerts": all_alerts,
+            }, indent=2, ensure_ascii=False)
+
+        elif uri == "tencent://system_status":
+            # Build comprehensive system health summary
+            resources = client.list_all_resources()
+
+            # Count by service and status
+            streamlive_channels = [r for r in resources if r.get("service") == "StreamLive"]
+            streamlink_flows = [r for r in resources if r.get("service") == "StreamLink"]
+
+            running_streamlive = [r for r in streamlive_channels if r.get("status") == "running"]
+            idle_streamlive = [r for r in streamlive_channels if r.get("status") == "idle"]
+
+            running_streamlink = [r for r in streamlink_flows if r.get("status") == "running"]
+            idle_streamlink = [r for r in streamlink_flows if r.get("status") == "idle"]
+
+            # Get alerts for running channels
+            all_alerts = []
+            for channel in running_streamlive:
+                channel_id = channel.get("id", "")
+                channel_name = channel.get("name", "")
+                try:
+                    alerts = get_channel_alerts(client, channel_id, channel_name)
+                    all_alerts.extend(alerts)
+                except Exception:
+                    pass
+
+            critical_alerts = [a for a in all_alerts if a.get("severity") == "critical"]
+
+            # Determine overall health
+            if critical_alerts:
+                overall_health = "critical"
+                health_message = f"{len(critical_alerts)}개의 심각한 알람이 발생 중입니다"
+            elif len(all_alerts) > 0:
+                overall_health = "warning"
+                health_message = f"{len(all_alerts)}개의 알람이 있습니다"
+            elif len(running_streamlive) == 0:
+                overall_health = "idle"
+                health_message = "실행 중인 채널이 없습니다"
+            else:
+                overall_health = "healthy"
+                health_message = "모든 시스템이 정상 작동 중입니다"
+
+            return json.dumps({
+                "type": "system_status",
+                "overall_health": overall_health,
+                "health_message": health_message,
+                "streamlive": {
+                    "total": len(streamlive_channels),
+                    "running": len(running_streamlive),
+                    "idle": len(idle_streamlive),
+                    "channels": [
+                        {
+                            "id": ch.get("id"),
+                            "name": ch.get("name"),
+                            "status": ch.get("status"),
+                        }
+                        for ch in streamlive_channels
+                    ],
+                },
+                "streamlink": {
+                    "total": len(streamlink_flows),
+                    "running": len(running_streamlink),
+                    "idle": len(idle_streamlink),
+                },
+                "alerts": {
+                    "total": len(all_alerts),
+                    "critical": len(critical_alerts),
+                    "recent": all_alerts[:5] if all_alerts else [],
+                },
+            }, indent=2, ensure_ascii=False)
+
         else:
             raise ValueError(f"Unknown resource URI: {uri}")

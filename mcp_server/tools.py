@@ -11,7 +11,145 @@ from typing import List, Dict, Any, Optional
 from mcp.server import Server
 from mcp.types import Tool, TextContent
 
+from app.services.alert_utils import get_channel_alerts, CRITICAL_ALERTS, WARNING_ALERTS
+
 logger = logging.getLogger(__name__)
+
+
+def _analyze_single_alert(
+    alert: Dict,
+    input_status: Optional[Dict],
+    linked_flows: List[Dict],
+    client,
+) -> Dict:
+    """Analyze a single alert and provide context and suggestions.
+
+    Args:
+        alert: Alert dictionary
+        input_status: Channel input status (main/backup)
+        linked_flows: Linked StreamLink flows
+        client: TencentCloudClient instance
+
+    Returns:
+        Analysis result with context and suggestions
+    """
+    alert_type = alert.get("type", "Unknown")
+    pipeline = alert.get("pipeline", "")
+
+    # Build context
+    context = {
+        "alert": alert,
+        "upstream_status": None,
+        "last_good_state": None,
+        "related_resources": [alert.get("channel_id")],
+        "possible_causes": [],
+    }
+
+    # Add linked flow IDs to related resources
+    for flow in linked_flows:
+        context["related_resources"].append(flow.get("id"))
+
+    # Analyze based on alert type
+    suggested_actions = []
+
+    if alert_type == "No Input Data":
+        # Check StreamLink flow status
+        flow_status_summary = []
+        for flow in linked_flows:
+            flow_status = flow.get("status", "unknown")
+            flow_status_summary.append(f"{flow.get('name', flow.get('id'))}: {flow_status}")
+
+            if flow_status != "running":
+                context["possible_causes"].append(f"StreamLink flow '{flow.get('name')}' is not running (status: {flow_status})")
+
+        context["upstream_status"] = ", ".join(flow_status_summary) if flow_status_summary else "No linked flows"
+
+        # Add possible causes
+        context["possible_causes"].extend([
+            "입력 소스가 끊어졌거나 연결되지 않음",
+            "네트워크 연결 문제",
+            "송출 장비 문제",
+            "StreamLink flow가 중지됨",
+        ])
+
+        # Add suggested actions
+        suggested_actions = [
+            "StreamLink flow 상태를 확인하세요 (get_linked_resources 도구 사용)",
+            "소스 장비의 송출 상태를 확인하세요",
+            "네트워크 연결을 점검하세요",
+            "소스가 정상이면 flow를 재시작하세요 (start_channel 도구 사용)",
+        ]
+
+    elif alert_type == "PipelineFailover":
+        # Check which pipeline is affected
+        is_main_affected = "Main" in pipeline or "Pipeline A" in pipeline
+
+        context["possible_causes"] = [
+            f"{'메인' if is_main_affected else '백업'} 파이프라인의 입력 소스 손실",
+            "해당 입력의 네트워크 연결 문제",
+            "자동 failover가 발생하여 다른 파이프라인으로 전환됨",
+        ]
+
+        # Check input status
+        if input_status:
+            active_input = input_status.get("active_input")
+            context["upstream_status"] = f"Active input: {active_input}"
+
+        suggested_actions = [
+            "현재 활성 입력(main/backup) 상태를 확인하세요",
+            f"{'메인' if is_main_affected else '백업'} 입력 소스의 연결 상태를 점검하세요",
+            "소스가 복구되면 자동으로 정상화됩니다",
+            "필요시 입력 설정을 확인하세요",
+        ]
+
+    elif alert_type == "PipelineRecover":
+        context["possible_causes"] = [
+            "이전에 실패했던 파이프라인이 복구됨",
+            "입력 소스가 다시 연결됨",
+        ]
+
+        suggested_actions = [
+            "정상 복구되었습니다. 추가 조치가 필요하지 않습니다.",
+            "반복적인 failover/recover가 발생하면 소스 안정성을 점검하세요",
+        ]
+
+    elif alert_type == "StreamStop":
+        context["possible_causes"] = [
+            "스트림 푸시가 중단됨",
+            "송출 장비에서 스트림 전송을 중지함",
+            "네트워크 연결 문제",
+        ]
+
+        suggested_actions = [
+            "송출 장비의 스트림 상태를 확인하세요",
+            "의도적인 중지인지 확인하세요",
+            "네트워크 연결을 점검하세요",
+        ]
+
+    elif alert_type == "StreamStart":
+        context["possible_causes"] = [
+            "스트림 푸시가 시작됨",
+        ]
+
+        suggested_actions = [
+            "정상적인 스트림 시작입니다. 추가 조치가 필요하지 않습니다.",
+        ]
+
+    else:
+        context["possible_causes"] = [
+            "알 수 없는 알람 유형입니다",
+        ]
+
+        suggested_actions = [
+            "채널 상세 정보를 확인하세요 (get_channel_status 도구 사용)",
+            "Tencent Cloud 콘솔에서 직접 확인하세요",
+        ]
+
+    return {
+        "alert": alert,
+        "context": context,
+        "suggested_actions": suggested_actions,
+    }
 
 
 def register_tools(server: Server, get_tencent_client, get_schedule_manager):
@@ -432,6 +570,52 @@ def register_tools(server: Server, get_tencent_client, get_schedule_manager):
                     "required": ["channel_id"],
                 },
             ),
+            # Alert Analysis Tools
+            Tool(
+                name="get_alerts",
+                description="Get current alerts from all running StreamLive channels. Returns alerts categorized by severity (critical, warning, info).",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "channel_id": {
+                            "type": "string",
+                            "description": "Optional: Filter alerts for a specific channel ID. If not provided, returns alerts from all running channels.",
+                        },
+                        "severity": {
+                            "type": "string",
+                            "description": "Optional: Filter by severity level",
+                            "enum": ["critical", "warning", "info", "all"],
+                            "default": "all",
+                        },
+                    },
+                },
+            ),
+            Tool(
+                name="analyze_alert",
+                description="Analyze a specific alert and provide context, possible causes, and suggested actions. Use this when investigating channel issues.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "channel_id": {
+                            "type": "string",
+                            "description": "The StreamLive channel ID with the alert",
+                        },
+                        "alert_type": {
+                            "type": "string",
+                            "description": "Optional: Specific alert type to analyze (e.g., 'No Input Data', 'PipelineFailover'). If not provided, analyzes all current alerts.",
+                        },
+                    },
+                    "required": ["channel_id"],
+                },
+            ),
+            Tool(
+                name="get_health_summary",
+                description="Get overall system health summary including channel counts, alert status, and any issues requiring attention.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
             # Log Analysis Tools
             Tool(
                 name="get_channel_logs",
@@ -704,43 +888,42 @@ async def _execute_tool(
     
     # Get linked resources
     elif name == "get_linked_resources":
-        from app.services.linkage import LinkageService
-        
+        from app.services.linkage import ResourceHierarchyBuilder
+
         channel_id = arguments["channel_id"]
         service = arguments["service"]
-        
+
         resources = client.list_all_resources()
-        linkage_service = LinkageService()
-        
+
         # Find the resource
         target_resource = None
         for r in resources:
             if r.get("id") == channel_id and r.get("service") == service:
                 target_resource = r
                 break
-        
+
         if not target_resource:
             return {
                 "success": False,
                 "error": f"Resource not found: {channel_id}",
             }
-        
+
         # Build hierarchy and find linked resources
-        hierarchy = linkage_service.build_hierarchy(resources)
+        hierarchy = ResourceHierarchyBuilder.build_hierarchy(resources)
         linked = []
-        
+
         if service == "StreamLive":
             # Find children (StreamLink flows)
             for h in hierarchy:
-                if h.parent.get("id") == channel_id:
-                    linked = h.children
+                if h["parent"].get("id") == channel_id:
+                    linked = h["children"]
                     break
         else:
             # Find parent (StreamLive channel)
             for h in hierarchy:
-                for child in h.children:
+                for child in h["children"]:
                     if child.get("id") == channel_id:
-                        linked = [h.parent]
+                        linked = [h["parent"]]
                         break
         
         return {
@@ -753,31 +936,30 @@ async def _execute_tool(
     # Start integrated
     elif name == "start_integrated":
         channel_id = arguments["channel_id"]
-        
+
         # First, get linked resources
-        from app.services.linkage import LinkageService
-        
+        from app.services.linkage import ResourceHierarchyBuilder
+
         resources = client.list_all_resources()
-        linkage_service = LinkageService()
-        hierarchy = linkage_service.build_hierarchy(resources)
-        
+        hierarchy = ResourceHierarchyBuilder.build_hierarchy(resources)
+
         # Find the channel and its children
         target_hierarchy = None
         for h in hierarchy:
-            if h.parent.get("id") == channel_id:
+            if h["parent"].get("id") == channel_id:
                 target_hierarchy = h
                 break
-        
+
         if not target_hierarchy:
             return {
                 "success": False,
                 "error": f"StreamLive channel not found: {channel_id}",
             }
-        
+
         results = []
-        
+
         # Start children first (StreamLink flows)
-        for child in target_hierarchy.children:
+        for child in target_hierarchy["children"]:
             result = client.control_resource(child["id"], "StreamLink", "start")
             results.append({
                 "id": child["id"],
@@ -785,18 +967,18 @@ async def _execute_tool(
                 "service": "StreamLink",
                 **result,
             })
-        
+
         # Then start parent (StreamLive channel)
         parent_result = client.control_resource(channel_id, "StreamLive", "start")
         results.append({
             "id": channel_id,
-            "name": target_hierarchy.parent.get("name", ""),
+            "name": target_hierarchy["parent"].get("name", ""),
             "service": "StreamLive",
             **parent_result,
         })
-        
+
         all_success = all(r.get("success", False) for r in results)
-        
+
         return {
             "success": all_success,
             "action": "start_integrated",
@@ -806,39 +988,38 @@ async def _execute_tool(
     # Stop integrated
     elif name == "stop_integrated":
         channel_id = arguments["channel_id"]
-        
-        from app.services.linkage import LinkageService
-        
+
+        from app.services.linkage import ResourceHierarchyBuilder
+
         resources = client.list_all_resources()
-        linkage_service = LinkageService()
-        hierarchy = linkage_service.build_hierarchy(resources)
-        
+        hierarchy = ResourceHierarchyBuilder.build_hierarchy(resources)
+
         # Find the channel and its children
         target_hierarchy = None
         for h in hierarchy:
-            if h.parent.get("id") == channel_id:
+            if h["parent"].get("id") == channel_id:
                 target_hierarchy = h
                 break
-        
+
         if not target_hierarchy:
             return {
                 "success": False,
                 "error": f"StreamLive channel not found: {channel_id}",
             }
-        
+
         results = []
-        
+
         # Stop parent first (StreamLive channel)
         parent_result = client.control_resource(channel_id, "StreamLive", "stop")
         results.append({
             "id": channel_id,
-            "name": target_hierarchy.parent.get("name", ""),
+            "name": target_hierarchy["parent"].get("name", ""),
             "service": "StreamLive",
             **parent_result,
         })
-        
+
         # Then stop children (StreamLink flows)
-        for child in target_hierarchy.children:
+        for child in target_hierarchy["children"]:
             result = client.control_resource(child["id"], "StreamLink", "stop")
             results.append({
                 "id": child["id"],
@@ -846,9 +1027,9 @@ async def _execute_tool(
                 "service": "StreamLink",
                 **result,
             })
-        
+
         all_success = all(r.get("success", False) for r in results)
-        
+
         return {
             "success": all_success,
             "action": "stop_integrated",
@@ -982,6 +1163,218 @@ async def _execute_tool(
             "events": events,
         }
     
+    # Get alerts
+    elif name == "get_alerts":
+        channel_id_filter = arguments.get("channel_id")
+        severity_filter = arguments.get("severity", "all")
+
+        resources = client.list_all_resources()
+        running_channels = [
+            r for r in resources
+            if r.get("service") == "StreamLive" and r.get("status") == "running"
+        ]
+
+        # If specific channel requested, filter to that channel
+        if channel_id_filter:
+            running_channels = [
+                r for r in running_channels
+                if r.get("id") == channel_id_filter
+            ]
+
+        all_alerts = []
+        for channel in running_channels:
+            ch_id = channel.get("id", "")
+            ch_name = channel.get("name", "")
+            try:
+                alerts = get_channel_alerts(client, ch_id, ch_name)
+                all_alerts.extend(alerts)
+            except Exception as e:
+                logger.error(f"Failed to get alerts for channel {ch_id}: {e}")
+
+        # Filter by severity if requested
+        if severity_filter != "all":
+            all_alerts = [a for a in all_alerts if a.get("severity") == severity_filter]
+
+        # Categorize alerts
+        critical_alerts = [a for a in all_alerts if a.get("severity") == "critical"]
+        warning_alerts = [a for a in all_alerts if a.get("severity") == "warning"]
+        info_alerts = [a for a in all_alerts if a.get("severity") == "info"]
+
+        return {
+            "success": True,
+            "summary": {
+                "total_alerts": len(all_alerts),
+                "critical": len(critical_alerts),
+                "warning": len(warning_alerts),
+                "info": len(info_alerts),
+                "channels_checked": len(running_channels),
+            },
+            "alerts": all_alerts,
+            "critical_alerts": critical_alerts,
+            "warning_alerts": warning_alerts,
+        }
+
+    # Analyze alert
+    elif name == "analyze_alert":
+        channel_id = arguments["channel_id"]
+        alert_type_filter = arguments.get("alert_type")
+
+        # Get channel details
+        channel_details = client.get_resource_details(channel_id, "StreamLive")
+        if not channel_details:
+            return {
+                "success": False,
+                "error": f"Channel not found: {channel_id}",
+            }
+
+        channel_name = channel_details.get("name", channel_id)
+
+        # Get current alerts for the channel
+        alerts = get_channel_alerts(client, channel_id, channel_name)
+
+        # Filter by alert type if specified
+        if alert_type_filter:
+            alerts = [a for a in alerts if a.get("type") == alert_type_filter]
+
+        if not alerts:
+            return {
+                "success": True,
+                "channel_id": channel_id,
+                "channel_name": channel_name,
+                "message": "현재 활성 알람이 없습니다.",
+                "alerts": [],
+            }
+
+        # Get additional context
+        input_status = client.get_channel_input_status(channel_id)
+
+        # Get linked StreamLink flows
+        from app.services.linkage import ResourceHierarchyBuilder
+        resources = client.list_all_resources()
+        hierarchy = ResourceHierarchyBuilder.build_hierarchy(resources)
+
+        linked_flows = []
+        for h in hierarchy:
+            if h["parent"].get("id") == channel_id:
+                linked_flows = h["children"]
+                break
+
+        # Analyze each alert and provide context
+        analyzed_alerts = []
+        for alert in alerts:
+            alert_analysis = _analyze_single_alert(
+                alert=alert,
+                input_status=input_status,
+                linked_flows=linked_flows,
+                client=client,
+            )
+            analyzed_alerts.append(alert_analysis)
+
+        return {
+            "success": True,
+            "channel_id": channel_id,
+            "channel_name": channel_name,
+            "total_alerts": len(analyzed_alerts),
+            "analyzed_alerts": analyzed_alerts,
+            "channel_status": {
+                "state": channel_details.get("status"),
+                "active_input": input_status.get("active_input") if input_status else None,
+            },
+            "linked_flows": [
+                {
+                    "id": f.get("id"),
+                    "name": f.get("name"),
+                    "status": f.get("status"),
+                }
+                for f in linked_flows
+            ],
+        }
+
+    # Get health summary
+    elif name == "get_health_summary":
+        resources = client.list_all_resources()
+
+        # Count by service and status
+        streamlive_channels = [r for r in resources if r.get("service") == "StreamLive"]
+        streamlink_flows = [r for r in resources if r.get("service") == "StreamLink"]
+
+        running_streamlive = [r for r in streamlive_channels if r.get("status") == "running"]
+        idle_streamlive = [r for r in streamlive_channels if r.get("status") == "idle"]
+
+        running_streamlink = [r for r in streamlink_flows if r.get("status") == "running"]
+        idle_streamlink = [r for r in streamlink_flows if r.get("status") == "idle"]
+
+        # Get alerts
+        all_alerts = []
+        for channel in running_streamlive:
+            ch_id = channel.get("id", "")
+            ch_name = channel.get("name", "")
+            try:
+                alerts = get_channel_alerts(client, ch_id, ch_name)
+                all_alerts.extend(alerts)
+            except Exception:
+                pass
+
+        critical_alerts = [a for a in all_alerts if a.get("severity") == "critical"]
+        warning_alerts = [a for a in all_alerts if a.get("severity") == "warning"]
+
+        # Determine overall health
+        if critical_alerts:
+            overall_health = "critical"
+            health_message = f"{len(critical_alerts)}개의 심각한 알람이 발생 중입니다. 즉시 확인이 필요합니다."
+        elif warning_alerts:
+            overall_health = "warning"
+            health_message = f"{len(warning_alerts)}개의 주의 알람이 있습니다."
+        elif len(running_streamlive) == 0:
+            overall_health = "idle"
+            health_message = "실행 중인 채널이 없습니다."
+        else:
+            overall_health = "healthy"
+            health_message = "모든 시스템이 정상 작동 중입니다."
+
+        # Build issues list
+        issues = []
+        for alert in critical_alerts:
+            issues.append({
+                "severity": "critical",
+                "channel": alert.get("channel_name"),
+                "issue": alert.get("type"),
+                "pipeline": alert.get("pipeline"),
+            })
+        for alert in warning_alerts:
+            issues.append({
+                "severity": "warning",
+                "channel": alert.get("channel_name"),
+                "issue": alert.get("type"),
+                "pipeline": alert.get("pipeline"),
+            })
+
+        return {
+            "success": True,
+            "overall_health": overall_health,
+            "health_message": health_message,
+            "summary": {
+                "streamlive_total": len(streamlive_channels),
+                "streamlive_running": len(running_streamlive),
+                "streamlive_idle": len(idle_streamlive),
+                "streamlink_total": len(streamlink_flows),
+                "streamlink_running": len(running_streamlink),
+                "streamlink_idle": len(idle_streamlink),
+                "total_alerts": len(all_alerts),
+                "critical_alerts": len(critical_alerts),
+                "warning_alerts": len(warning_alerts),
+            },
+            "issues": issues,
+            "running_channels": [
+                {
+                    "id": ch.get("id"),
+                    "name": ch.get("name"),
+                    "status": ch.get("status"),
+                }
+                for ch in running_streamlive
+            ],
+        }
+
     # Get full status (integrated)
     elif name == "get_full_status":
         channel_id = arguments["channel_id"]
@@ -1012,16 +1405,15 @@ async def _execute_tool(
             result["css"] = css_verification
         
         # Get linked StreamLink flows
-        from app.services.linkage import LinkageService
+        from app.services.linkage import ResourceHierarchyBuilder
         resources = client.list_all_resources()
-        linkage_service = LinkageService()
-        hierarchy = linkage_service.build_hierarchy(resources)
-        
+        hierarchy = ResourceHierarchyBuilder.build_hierarchy(resources)
+
         for h in hierarchy:
-            if h.parent.get("id") == channel_id:
-                result["linked_streamlink_flows"] = h.children
+            if h["parent"].get("id") == channel_id:
+                result["linked_streamlink_flows"] = h["children"]
                 break
-        
+
         return result
     
     # Get channel logs
