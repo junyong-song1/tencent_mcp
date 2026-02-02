@@ -59,44 +59,68 @@ class TencentCloudClient:
         self._cache_lock = threading.Lock()
         self.executor = ThreadPoolExecutor(max_workers=self._max_workers)
 
+        # Pre-create SDK clients for reuse (thread-safe)
+        self._cred = credential.Credential(self._secret_id, self._secret_key)
+        self._http_profile = HttpProfile()
+        self._http_profile.reqTimeout = self._timeout
+        self._client_profile = ClientProfile(httpProfile=self._http_profile)
+
+        # Cached client instances
+        self._mdc_client: Optional[mdc_client.MdcClient] = None
+        self._mdl_client: Optional[mdl_client.MdlClient] = None
+        self._mdp_client = None
+        self._css_client = None
+        self._client_init_lock = threading.Lock()
+
         logger.info("TencentCloudClient initialized")
 
     def _get_mdc_client(self) -> mdc_client.MdcClient:
-        """Get a thread-safe MDC client."""
-        cred = credential.Credential(self._secret_id, self._secret_key)
-        http_profile = HttpProfile()
-        http_profile.reqTimeout = self._timeout
-        client_profile = ClientProfile(httpProfile=http_profile)
-        return mdc_client.MdcClient(cred, self._region, client_profile)
+        """Get cached MDC client (thread-safe)."""
+        if self._mdc_client is None:
+            with self._client_init_lock:
+                if self._mdc_client is None:
+                    self._mdc_client = mdc_client.MdcClient(
+                        self._cred, self._region, self._client_profile
+                    )
+        return self._mdc_client
 
     def _get_mdl_client(self) -> mdl_client.MdlClient:
-        """Get a thread-safe MDL client."""
-        cred = credential.Credential(self._secret_id, self._secret_key)
-        http_profile = HttpProfile()
-        http_profile.reqTimeout = self._timeout
-        client_profile = ClientProfile(httpProfile=http_profile)
-        return mdl_client.MdlClient(cred, self._region, client_profile)
+        """Get cached MDL client (thread-safe)."""
+        if self._mdl_client is None:
+            with self._client_init_lock:
+                if self._mdl_client is None:
+                    self._mdl_client = mdl_client.MdlClient(
+                        self._cred, self._region, self._client_profile
+                    )
+        return self._mdl_client
 
     def _get_mdp_client(self):
-        """Get a thread-safe MDP (StreamPackage) client."""
+        """Get cached MDP (StreamPackage) client (thread-safe)."""
         if not STREAMPACKAGE_AVAILABLE:
             return None
-        cred = credential.Credential(self._secret_id, self._secret_key)
-        http_profile = HttpProfile()
-        http_profile.reqTimeout = self._timeout
-        http_profile.endpoint = "mdp.intl.tencentcloudapi.com"
-        client_profile = ClientProfile(httpProfile=http_profile)
-        return mdp_client.MdpClient(cred, self._region, client_profile)
+        if self._mdp_client is None:
+            with self._client_init_lock:
+                if self._mdp_client is None:
+                    http_profile = HttpProfile()
+                    http_profile.reqTimeout = self._timeout
+                    http_profile.endpoint = "mdp.intl.tencentcloudapi.com"
+                    client_profile = ClientProfile(httpProfile=http_profile)
+                    self._mdp_client = mdp_client.MdpClient(
+                        self._cred, self._region, client_profile
+                    )
+        return self._mdp_client
 
     def _get_css_client(self):
-        """Get a thread-safe CSS (Live) client."""
+        """Get cached CSS (Live) client (thread-safe)."""
         if not CSS_AVAILABLE:
             return None
-        cred = credential.Credential(self._secret_id, self._secret_key)
-        http_profile = HttpProfile()
-        http_profile.reqTimeout = self._timeout
-        client_profile = ClientProfile(httpProfile=http_profile)
-        return live_client.LiveClient(cred, self._region, client_profile)
+        if self._css_client is None:
+            with self._client_init_lock:
+                if self._css_client is None:
+                    self._css_client = live_client.LiveClient(
+                        self._cred, self._region, self._client_profile
+                    )
+        return self._css_client
 
     def _normalize_mdl_status(self, state: str) -> str:
         """Normalize MediaLive status."""
@@ -227,7 +251,6 @@ class TencentCloudClient:
     def _fetch_single_flow_detail(self, flow_id: str) -> Dict:
         """Fetch detailed flow info."""
         try:
-            time.sleep(0.05)
             client = self._get_mdc_client()
             req = mdc_models.DescribeStreamLinkFlowRequest()
             req.FlowId = flow_id
@@ -278,7 +301,7 @@ class TencentCloudClient:
         return {"id": flow_id, "output_urls": [], "status": "unknown", "inputs_count": 0, "input_details": []}
 
     def list_streamlink_inputs(self) -> List[Dict]:
-        """List StreamLink flows."""
+        """List StreamLink flows with incremental detail fetching."""
         try:
             client = self._get_mdc_client()
             req = mdc_models.DescribeStreamLinkFlowsRequest()
@@ -287,24 +310,32 @@ class TencentCloudClient:
             resp = client.DescribeStreamLinkFlows(req)
             summary_list = resp.Infos if hasattr(resp, "Infos") else []
 
-            flow_details = {}
             cache_key = "mdc_linkage_details"
-            need_fetch = True
+            flow_details = {}
+            ids_to_fetch = []
 
             with self._cache_lock:
                 cached = self._linkage_cache.get(cache_key)
-                if cached and (time.time() - cached["timestamp"] < self._cache_ttl):
-                    flow_details = cached["data"]
-                    summary_ids = set(f.FlowId for f in summary_list)
-                    if summary_ids.issubset(set(flow_details.keys())):
-                        need_fetch = False
+                if cached:
+                    flow_details = cached.get("data", {}).copy()
 
-            if need_fetch:
-                ids = [f.FlowId for f in summary_list]
-                results = list(self.executor.map(self._fetch_single_flow_detail, ids))
-                flow_details = {res["id"]: res for res in results}
+            # Find which flows need detail fetching (new or not in cache)
+            for f in summary_list:
+                flow_id = f.FlowId
+                if flow_id not in flow_details:
+                    ids_to_fetch.append(flow_id)
+
+            # Only fetch details for new/missing flows
+            if ids_to_fetch:
+                logger.info(f"Fetching details for {len(ids_to_fetch)} new flows (skipping {len(summary_list) - len(ids_to_fetch)} cached)")
+                results = list(self.executor.map(self._fetch_single_flow_detail, ids_to_fetch))
+                for res in results:
+                    flow_details[res["id"]] = res
+
                 with self._cache_lock:
                     self._linkage_cache[cache_key] = {"data": flow_details, "timestamp": time.time()}
+            else:
+                logger.debug(f"All {len(summary_list)} flows found in cache")
 
             inputs = []
             for info in summary_list:
@@ -328,8 +359,8 @@ class TencentCloudClient:
             logger.error(f"Failed to list StreamLink flows: {e}")
             return []
 
-    def list_all_resources(self) -> List[Dict]:
-        """List all resources across all services."""
+    def _fetch_all_resources_sync(self) -> List[Dict]:
+        """Fetch all resources (internal, no cache)."""
         all_resources = []
 
         f_mdl = self.executor.submit(self.list_mdl_channels)
@@ -341,8 +372,75 @@ class TencentCloudClient:
         all_resources.extend(mdl_channels)
         all_resources.extend(link_resources)
 
-        logger.info(f"Total resources found: {len(all_resources)}")
         return all_resources
+
+    def list_all_resources(self, force_refresh: bool = False) -> List[Dict]:
+        """List all resources with stale-while-revalidate caching.
+
+        Args:
+            force_refresh: If True, bypass cache and fetch fresh data
+
+        Returns:
+            List of all resources (may be stale if background refresh is in progress)
+        """
+        cache_key = "all_resources"
+        stale_ttl = self._cache_ttl  # 120s - after this, trigger background refresh
+        max_ttl = self._cache_ttl * 5  # 600s - after this, force synchronous refresh
+
+        with self._cache_lock:
+            cached = self._linkage_cache.get(cache_key)
+
+        now = time.time()
+
+        # Force refresh requested
+        if force_refresh:
+            cached = None
+
+        # No cache or cache too old - synchronous fetch required
+        if not cached or (now - cached["timestamp"] > max_ttl):
+            all_resources = self._fetch_all_resources_sync()
+            with self._cache_lock:
+                self._linkage_cache[cache_key] = {
+                    "data": all_resources,
+                    "timestamp": now,
+                    "refreshing": False,
+                }
+            logger.info(f"Total resources found: {len(all_resources)} (fresh)")
+            return all_resources
+
+        # Cache exists - check if stale
+        cache_age = now - cached["timestamp"]
+        is_stale = cache_age > stale_ttl
+        is_refreshing = cached.get("refreshing", False)
+
+        # If stale and not already refreshing, trigger background refresh
+        if is_stale and not is_refreshing:
+            with self._cache_lock:
+                self._linkage_cache[cache_key]["refreshing"] = True
+
+            def background_refresh():
+                try:
+                    fresh_data = self._fetch_all_resources_sync()
+                    with self._cache_lock:
+                        self._linkage_cache[cache_key] = {
+                            "data": fresh_data,
+                            "timestamp": time.time(),
+                            "refreshing": False,
+                        }
+                    logger.info(f"Background refresh complete: {len(fresh_data)} resources")
+                except Exception as e:
+                    logger.error(f"Background refresh failed: {e}")
+                    with self._cache_lock:
+                        if cache_key in self._linkage_cache:
+                            self._linkage_cache[cache_key]["refreshing"] = False
+
+            self.executor.submit(background_refresh)
+            logger.debug(f"Returning stale cache ({cache_age:.1f}s old), background refresh started")
+
+        # Return cached data immediately
+        result = cached["data"]
+        logger.info(f"Total resources found: {len(result)} (cached, {cache_age:.1f}s old)")
+        return result
 
     def start_mdl_channel(self, channel_id: str) -> Dict:
         """Start MediaLive channel."""
