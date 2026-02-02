@@ -119,31 +119,11 @@ def register(app: App, services):
                     try:
                         logger.info(f"/tencent: Fetching resources...")
                         channels = services.tencent_client.list_all_resources()
-                        logger.info(f"/tencent: Got {len(channels)} resources")
-
-                        # Fetch flow statistics for running StreamLink flows
-                        flow_stats = {}
-                        try:
-                            running_flows = [
-                                r for r in channels
-                                if r.get("service") == "StreamLink" and r.get("status") == "running"
-                            ]
-                            if running_flows:
-                                flow_ids = [f.get("id") for f in running_flows if f.get("id")]
-                                # Limit to first 10 flows to avoid performance issues
-                                flow_ids = flow_ids[:50]
-                                if flow_ids:
-                                    logger.info(f"/tencent: Fetching stats for {len(flow_ids)} running flows...")
-                                    flow_stats = services.tencent_client.get_flow_statistics_batch(flow_ids)
-                        except Exception as e:
-                            logger.warning(f"/tencent: Failed to fetch flow stats: {e}")
-
-                        logger.info(f"/tencent: Building modal...")
+                        logger.info(f"/tencent: Got {len(channels)} resources, building modal...")
                         modal_view = DashboardUI.create_dashboard_modal(
                             channels=channels,
                             keyword=initial_keyword,
                             channel_id=channel_id,
-                            flow_stats=flow_stats,
                         )
                         logger.info(f"/tencent: Updating modal view...")
                         client.views_update(view_id=view_id, view=modal_view)
