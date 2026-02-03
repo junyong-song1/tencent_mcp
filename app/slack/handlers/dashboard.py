@@ -225,7 +225,7 @@ def register(app: App, services):
     # ========== StreamLink Only Dashboard Handlers ==========
 
     def _build_failover_map(services, hierarchy: list) -> dict:
-        """Build a map of channel_id to failover status.
+        """Build a map of channel_id to failover status (parallel fetching).
 
         Args:
             services: Services container
@@ -234,26 +234,40 @@ def register(app: App, services):
         Returns:
             {channel_id: {"active_input": str, "failover_info": dict}}
         """
-        failover_map = {}
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
+        # Collect channel IDs to fetch
+        channel_ids = []
         for group in hierarchy:
             parent = group["parent"]
             children = group["children"]
+            if parent.get("service") == "StreamLive" and children:
+                channel_ids.append(parent.get("id", ""))
 
-            # Only process StreamLive parents with children
-            if parent.get("service") != "StreamLive" or not children:
-                continue
+        if not channel_ids:
+            return {}
 
-            channel_id = parent.get("id", "")
+        failover_map = {}
+
+        def fetch_status(channel_id):
             try:
                 input_status = services.tencent_client.get_channel_input_status(channel_id)
                 if input_status:
-                    failover_map[channel_id] = {
+                    return channel_id, {
                         "active_input": input_status.get("active_input"),
                         "failover_info": input_status.get("log_based_detection", {}),
                     }
             except Exception as e:
                 logger.debug(f"Could not get failover status for {channel_id}: {e}")
+            return channel_id, None
+
+        # Parallel fetch with max 10 workers
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(fetch_status, cid): cid for cid in channel_ids}
+            for future in as_completed(futures):
+                channel_id, result = future.result()
+                if result:
+                    failover_map[channel_id] = result
 
         return failover_map
 
