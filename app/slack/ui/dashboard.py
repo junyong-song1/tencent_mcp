@@ -667,8 +667,9 @@ class DashboardUI:
 
         parent_text = f"{parent_emoji} 📺 *{parent_name}*"
 
-        # Add failover status
+        # Add failover status (from API) or signal status (from StreamLink flow status)
         if active_input:
+            # Use failover detection result (from API)
             if active_input == "main":
                 parent_text += " | 🟢 Main"
             elif active_input == "backup":
@@ -680,9 +681,16 @@ class DashboardUI:
             elif active_input == "silent":
                 parent_text += " | 🟣 대기 이미지"
             elif active_input == "no_signal":
-                parent_text += " | ⚫ 신호 없음"
+                parent_text += " | ⚫ 무신호"
             else:
                 parent_text += f" | ⚪ {active_input}"
+        else:
+            # Fallback: infer signal status from StreamLink flow status (no extra API call)
+            running_flows = [c for c in children if c.get("status") == "running"]
+            if running_flows:
+                parent_text += " | 📶 신호 수신중"
+            elif children:
+                parent_text += " | ⚫ 무신호"
 
         parent_text += f"\nID: `{parent_id[:20]}...` | 상태: {parent_status}"
 
@@ -726,7 +734,16 @@ class DashboardUI:
         flow_status = flow.get("status", "unknown")
         status_emoji = get_status_emoji(flow_status)
 
-        flow_text = f"  └ {status_emoji} 📡 *{flow_name}* | 상태: {flow_status}"
+        # Add protocol and bandwidth
+        protocol = flow.get("protocol", "")
+        max_bandwidth = flow.get("max_bandwidth_mbps", 0)
+
+        flow_text = f"  └ {status_emoji} 📡 *{flow_name}*"
+        if protocol:
+            flow_text += f" | {protocol}"
+        if max_bandwidth:
+            flow_text += f" {max_bandwidth}Mbps"
+        flow_text += f" | 상태: {flow_status}"
 
         # Control button
         if flow_status in ["stopped", "idle"]:

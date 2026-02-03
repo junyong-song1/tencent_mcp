@@ -366,6 +366,14 @@ class TencentCloudClient:
                 flow_id = getattr(info, "FlowId", "")
                 detail = flow_details.get(flow_id, {})
 
+                # Get protocol from input_details
+                input_details = detail.get("input_details", [])
+                protocol = input_details[0].get("protocol", "") if input_details else ""
+
+                # Get max bandwidth from summary (in bps, convert to Mbps for display)
+                max_bandwidth = getattr(info, "MaxBandwidth", 0)
+                max_bandwidth_mbps = max_bandwidth // 1000000 if max_bandwidth else 0
+
                 inputs.append({
                     "id": flow_id,
                     "name": getattr(info, "FlowName", "Unknown Flow"),
@@ -375,6 +383,8 @@ class TencentCloudClient:
                     "output_urls": detail.get("output_urls", []),
                     "monitor_url": detail.get("monitor_url"),  # VLC playable URL
                     "input_attachments": detail.get("input_details", []),
+                    "protocol": protocol,
+                    "max_bandwidth_mbps": max_bandwidth_mbps,
                 })
 
             logger.info(f"Found {len(inputs)} StreamLink resources")
@@ -1296,25 +1306,31 @@ class TencentCloudClient:
                             break
             
             # Check if there's actual signal on any input
-            # If no log event and no signal detected, mark as "no_signal"
+            # Always verify actual signal status, regardless of log events
             has_signal = False
-            if log_based_result and log_based_result.get("last_event_type"):
-                # Log event exists, trust the log-based detection
-                has_signal = True
-            else:
-                # Check input_states for actual network activity
-                for inp_id, state in input_states.items():
-                    bandwidth = state.get("bandwidth", 0)
-                    if bandwidth and bandwidth > 0:
-                        has_signal = True
-                        break
-                    # Also check QueryInputStreamState results
-                    if state.get("is_active") or state.get("status") == 1:
+
+            # Check input_states for actual network activity
+            for inp_id, state in input_states.items():
+                bandwidth = state.get("bandwidth", 0)
+                if bandwidth and bandwidth > 0:
+                    has_signal = True
+                    break
+                # Also check QueryInputStreamState results
+                if state.get("is_active") or state.get("status") == 1:
+                    has_signal = True
+                    break
+
+            # Also check source_status_by_input for active sources
+            if not has_signal and source_status_by_input:
+                for inp_id, source_info in source_status_by_input.items():
+                    active_sources = source_info.get("active_sources", [])
+                    if active_sources:
                         has_signal = True
                         break
 
-            if not has_signal and active_input_type:
-                # No actual signal detected, mark as no_signal
+            if not has_signal:
+                # No actual signal detected, override to no_signal
+                # (even if log shows past failover event)
                 logger.info(f"No signal detected on any input for channel {channel_id}")
                 active_input_type = "no_signal"
                 verification_sources.append("NoSignal")
