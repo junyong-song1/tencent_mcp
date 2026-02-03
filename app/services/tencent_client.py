@@ -1142,9 +1142,11 @@ class TencentCloudClient:
 
             # Priority 0: Log-based detection (MOST RELIABLE)
             # This checks PipelineFailover/PipelineRecover events to determine actual serving pipeline
+            # IMPORTANT: Only trust log-based detection if there was an actual event
             try:
                 log_based_result = self._get_active_pipeline_from_logs(channel_id, hours=24)
-                if log_based_result and log_based_result.get("active_pipeline"):
+                if log_based_result and log_based_result.get("last_event_type"):
+                    # Only use log-based result if there was an actual failover event
                     active_input_type = log_based_result["active_pipeline"]
                     verification_sources.append("ChannelLogs")
 
@@ -1158,6 +1160,8 @@ class TencentCloudClient:
                                 break
 
                     logger.info(f"Log-based detection: {active_input_type} (event: {log_based_result.get('last_event_type')})")
+                else:
+                    logger.info(f"Log-based detection: No failover events found, will use other methods")
             except Exception as e:
                 logger.debug(f"Log-based detection failed: {e}")
 
@@ -1185,6 +1189,49 @@ class TencentCloudClient:
                                 verification_sources.append("QueryInputStreamState(default)")
                             verification_sources.append("InputSourceRedundancy")
                             logger.info(f"QueryInputStreamState: Multiple active sources, using default/log-based: {active_input_type}")
+
+            # Priority 1.5: If no log event, check running StreamLink flows directly
+            if not active_input_type:
+                try:
+                    from app.services.linkage import LinkageMatcher
+                    flows = self.list_streamlink_inputs()
+
+                    # Get channel input endpoints
+                    channel_info = {"id": channel_id, "input_endpoints": []}
+                    all_channels = self.list_mdl_channels()
+                    for ch in all_channels:
+                        if ch.get("id") == channel_id:
+                            channel_info["input_endpoints"] = ch.get("input_endpoints", [])
+                            break
+
+                    linked_flows = LinkageMatcher.find_linked_flows(channel_info, flows)
+
+                    # Find running flows and determine main/backup from name
+                    running_flows = [f for f in linked_flows if f.get("status") == "running"]
+
+                    for flow in running_flows:
+                        flow_name = flow.get("name", "").lower()
+                        if "_b" in flow_name or "backup" in flow_name:
+                            active_input_type = "backup"
+                            verification_sources.append("StreamLinkRunning")
+                            logger.info(f"Detected backup from running flow: {flow.get('name')}")
+                            break
+                        elif "_m" in flow_name or "main" in flow_name:
+                            active_input_type = "main"
+                            verification_sources.append("StreamLinkRunning")
+                            logger.info(f"Detected main from running flow: {flow.get('name')}")
+                            break
+
+                    # If only one flow is running and couldn't determine from name
+                    if not active_input_type and len(running_flows) == 1:
+                        flow_name = running_flows[0].get("name", "").lower()
+                        # Default: if no clear indicator, assume main
+                        active_input_type = "main"
+                        verification_sources.append("StreamLinkRunning(default)")
+                        logger.info(f"Single running flow, defaulting to main: {running_flows[0].get('name')}")
+
+                except Exception as e:
+                    logger.debug(f"Could not check running StreamLink flows: {e}")
 
             if active_input_id and not active_input_type:
                 # Priority 2: StreamLink flow type (fallback - if QueryInputStreamState didn't work)
