@@ -1,6 +1,7 @@
 """Dashboard action handlers."""
 import json
 import logging
+import re
 import threading
 
 from slack_bolt import App
@@ -219,4 +220,346 @@ def register(app: App, services):
     @app.action("dashboard_page_info")
     def handle_page_info(ack, body, client, logger):
         """Handle page info button (no-op)."""
+        ack()
+
+    # ========== StreamLink Only Dashboard Handlers ==========
+
+    def extract_streamlink_modal_state(view: dict) -> dict:
+        """Extract filter state from StreamLink-only modal view."""
+        filters = view.get("state", {}).get("values", {}).get("streamlink_only_filters", {})
+        search_block = view.get("state", {}).get("values", {}).get("streamlink_only_search_block", {})
+
+        private_metadata = view.get("private_metadata", "")
+        channel_id = ""
+        page = 0
+        status_filter = "all"
+        keyword = ""
+
+        try:
+            metadata = json.loads(private_metadata)
+            channel_id = metadata.get("channel_id", "")
+            page = metadata.get("page", 0)
+            status_filter = metadata.get("status_filter", "all")
+            keyword = metadata.get("keyword", "")
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # Override with current UI state
+        if "streamlink_only_filter_status" in filters:
+            selected = filters["streamlink_only_filter_status"].get("selected_option")
+            if selected:
+                status_filter = selected.get("value", "all")
+
+        if "streamlink_only_search_input" in search_block:
+            keyword = search_block["streamlink_only_search_input"].get("value") or ""
+
+        return {
+            "view_id": view.get("id"),
+            "channel_id": channel_id,
+            "status_filter": status_filter,
+            "keyword": keyword,
+            "page": page,
+        }
+
+    def async_update_streamlink_modal(
+        client, view_id, channel_id, status_filter, keyword, page=0, clear_cache=False
+    ):
+        """Update StreamLink-only modal asynchronously."""
+        def _update():
+            try:
+                if clear_cache:
+                    services.tencent_client.clear_cache()
+
+                all_resources = services.tencent_client.list_all_resources()
+                flows = [r for r in all_resources if r.get("service") == "StreamLink"]
+                streamlive_channels = [r for r in all_resources if r.get("service") == "StreamLive"]
+
+                # Build flow to channel map
+                from app.slack.handlers.commands import _build_flow_to_channel_map
+                flow_to_channel_map = _build_flow_to_channel_map(
+                    services, flows, streamlive_channels
+                )
+
+                modal_view = DashboardUI.create_streamlink_only_modal(
+                    flows=flows,
+                    flow_to_channel_map=flow_to_channel_map,
+                    status_filter=status_filter,
+                    keyword=keyword,
+                    channel_id=channel_id,
+                    page=page,
+                )
+                client.views_update(view_id=view_id, view=modal_view)
+            except Exception as e:
+                logger.error(f"StreamLink modal update failed: {e}")
+                try:
+                    client.views_update(
+                        view_id=view_id,
+                        view={
+                            "type": "modal",
+                            "callback_id": "streamlink_only_modal_view",
+                            "private_metadata": json.dumps({"channel_id": channel_id}),
+                            "title": {"type": "plain_text", "text": "오류 발생"},
+                            "close": {"type": "plain_text", "text": "닫기"},
+                            "blocks": [
+                                {
+                                    "type": "section",
+                                    "text": {"type": "mrkdwn", "text": f"업데이트 중 오류: {str(e)}"},
+                                }
+                            ],
+                        },
+                    )
+                except Exception:
+                    pass
+
+        threading.Thread(target=_update, daemon=True).start()
+
+    @app.action("streamlink_only_filter_status")
+    def handle_streamlink_filter_status(ack, body, client, logger):
+        """Handle status filter change in StreamLink-only dashboard."""
+        ack()
+        state = extract_streamlink_modal_state(body["view"])
+        status_filter = body["actions"][0]["selected_option"]["value"]
+        async_update_streamlink_modal(
+            client,
+            state["view_id"],
+            state["channel_id"],
+            status_filter,
+            state["keyword"],
+            page=0,  # Reset to first page on filter change
+        )
+
+    @app.action("streamlink_only_search_input")
+    def handle_streamlink_search_input(ack, body, client, logger):
+        """Handle search input in StreamLink-only dashboard."""
+        ack()
+        state = extract_streamlink_modal_state(body["view"])
+        async_update_streamlink_modal(
+            client,
+            state["view_id"],
+            state["channel_id"],
+            state["status_filter"],
+            state["keyword"],
+            page=0,  # Reset to first page on search
+        )
+
+    @app.action("streamlink_only_refresh")
+    def handle_streamlink_refresh(ack, body, client, logger):
+        """Handle refresh button in StreamLink-only dashboard."""
+        ack()
+        state = extract_streamlink_modal_state(body["view"])
+
+        # Show loading state
+        client.views_update(
+            view_id=state["view_id"],
+            view={
+                "type": "modal",
+                "callback_id": "streamlink_only_modal_view",
+                "private_metadata": json.dumps({"channel_id": state["channel_id"]}),
+                "title": {"type": "plain_text", "text": "StreamLink"},
+                "close": {"type": "plain_text", "text": "닫기"},
+                "blocks": [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": ":hourglass_flowing_sand: 새로고침 중..."}},
+                ],
+            },
+        )
+
+        async_update_streamlink_modal(
+            client,
+            state["view_id"],
+            state["channel_id"],
+            state["status_filter"],
+            state["keyword"],
+            page=0,
+            clear_cache=True,
+        )
+
+    @app.action("streamlink_only_page_prev")
+    def handle_streamlink_page_prev(ack, body, client, logger):
+        """Handle previous page button in StreamLink-only dashboard."""
+        ack()
+        state = extract_streamlink_modal_state(body["view"])
+        new_page = max(0, state["page"] - 1)
+        async_update_streamlink_modal(
+            client,
+            state["view_id"],
+            state["channel_id"],
+            state["status_filter"],
+            state["keyword"],
+            page=new_page,
+        )
+
+    @app.action("streamlink_only_page_next")
+    def handle_streamlink_page_next(ack, body, client, logger):
+        """Handle next page button in StreamLink-only dashboard."""
+        ack()
+        state = extract_streamlink_modal_state(body["view"])
+        new_page = state["page"] + 1
+        async_update_streamlink_modal(
+            client,
+            state["view_id"],
+            state["channel_id"],
+            state["status_filter"],
+            state["keyword"],
+            page=new_page,
+        )
+
+    @app.action("streamlink_only_page_info")
+    def handle_streamlink_page_info(ack, body, client, logger):
+        """Handle page info button (no-op)."""
+        ack()
+
+    @app.action(re.compile(r"^streamlink_only_start_.*$"))
+    def handle_streamlink_start(ack, body, client, logger):
+        """Handle start button for StreamLink flow."""
+        ack()
+        action = body["actions"][0]
+        action_id = action["action_id"]
+        value = action["value"]  # "StreamLink:flow_id"
+
+        service, resource_id = value.split(":", 1)
+        state = extract_streamlink_modal_state(body["view"])
+
+        # Show processing state
+        client.views_update(
+            view_id=state["view_id"],
+            view={
+                "type": "modal",
+                "callback_id": "streamlink_only_modal_view",
+                "private_metadata": json.dumps({"channel_id": state["channel_id"]}),
+                "title": {"type": "plain_text", "text": "StreamLink"},
+                "close": {"type": "plain_text", "text": "닫기"},
+                "blocks": [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f":hourglass_flowing_sand: Flow를 시작하고 있습니다..."}},
+                ],
+            },
+        )
+
+        def async_start_and_refresh():
+            try:
+                # Start the flow
+                result = services.tencent_client.start_resource(resource_id, service)
+                logger.info(f"StreamLink flow started: {resource_id}, result: {result}")
+
+                # Wait for status to stabilize and failover to occur
+                import time
+                time.sleep(8)
+
+                # Clear cache and refresh
+                services.tencent_client.clear_cache()
+
+                all_resources = services.tencent_client.list_all_resources()
+                flows = [r for r in all_resources if r.get("service") == "StreamLink"]
+                streamlive_channels = [r for r in all_resources if r.get("service") == "StreamLive"]
+
+                from app.slack.handlers.commands import _build_flow_to_channel_map
+                flow_to_channel_map = _build_flow_to_channel_map(
+                    services, flows, streamlive_channels
+                )
+
+                modal_view = DashboardUI.create_streamlink_only_modal(
+                    flows=flows,
+                    flow_to_channel_map=flow_to_channel_map,
+                    status_filter=state["status_filter"],
+                    keyword=state["keyword"],
+                    channel_id=state["channel_id"],
+                    page=state["page"],
+                )
+                client.views_update(view_id=state["view_id"], view=modal_view)
+
+            except Exception as e:
+                logger.error(f"Failed to start StreamLink flow: {e}")
+                client.views_update(
+                    view_id=state["view_id"],
+                    view={
+                        "type": "modal",
+                        "callback_id": "streamlink_only_modal_view",
+                        "private_metadata": json.dumps({"channel_id": state["channel_id"]}),
+                        "title": {"type": "plain_text", "text": "오류"},
+                        "close": {"type": "plain_text", "text": "닫기"},
+                        "blocks": [
+                            {"type": "section", "text": {"type": "mrkdwn", "text": f":x: 시작 실패: {str(e)}"}},
+                        ],
+                    },
+                )
+
+        threading.Thread(target=async_start_and_refresh, daemon=True).start()
+
+    @app.action(re.compile(r"^streamlink_only_stop_.*$"))
+    def handle_streamlink_stop(ack, body, client, logger):
+        """Handle stop button for StreamLink flow."""
+        ack()
+        action = body["actions"][0]
+        value = action["value"]  # "StreamLink:flow_id"
+
+        service, resource_id = value.split(":", 1)
+        state = extract_streamlink_modal_state(body["view"])
+
+        # Show processing state
+        client.views_update(
+            view_id=state["view_id"],
+            view={
+                "type": "modal",
+                "callback_id": "streamlink_only_modal_view",
+                "private_metadata": json.dumps({"channel_id": state["channel_id"]}),
+                "title": {"type": "plain_text", "text": "StreamLink"},
+                "close": {"type": "plain_text", "text": "닫기"},
+                "blocks": [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f":hourglass_flowing_sand: Flow를 중지하고 있습니다..."}},
+                ],
+            },
+        )
+
+        def async_stop_and_refresh():
+            try:
+                # Stop the flow
+                result = services.tencent_client.stop_resource(resource_id, service)
+                logger.info(f"StreamLink flow stopped: {resource_id}, result: {result}")
+
+                # Wait for status to stabilize and failover to occur
+                import time
+                time.sleep(8)
+
+                # Clear cache and refresh
+                services.tencent_client.clear_cache()
+
+                all_resources = services.tencent_client.list_all_resources()
+                flows = [r for r in all_resources if r.get("service") == "StreamLink"]
+                streamlive_channels = [r for r in all_resources if r.get("service") == "StreamLive"]
+
+                from app.slack.handlers.commands import _build_flow_to_channel_map
+                flow_to_channel_map = _build_flow_to_channel_map(
+                    services, flows, streamlive_channels
+                )
+
+                modal_view = DashboardUI.create_streamlink_only_modal(
+                    flows=flows,
+                    flow_to_channel_map=flow_to_channel_map,
+                    status_filter=state["status_filter"],
+                    keyword=state["keyword"],
+                    channel_id=state["channel_id"],
+                    page=state["page"],
+                )
+                client.views_update(view_id=state["view_id"], view=modal_view)
+
+            except Exception as e:
+                logger.error(f"Failed to stop StreamLink flow: {e}")
+                client.views_update(
+                    view_id=state["view_id"],
+                    view={
+                        "type": "modal",
+                        "callback_id": "streamlink_only_modal_view",
+                        "private_metadata": json.dumps({"channel_id": state["channel_id"]}),
+                        "title": {"type": "plain_text", "text": "오류"},
+                        "close": {"type": "plain_text", "text": "닫기"},
+                        "blocks": [
+                            {"type": "section", "text": {"type": "mrkdwn", "text": f":x: 중지 실패: {str(e)}"}},
+                        ],
+                    },
+                )
+
+        threading.Thread(target=async_stop_and_refresh, daemon=True).start()
+
+    @app.action(re.compile(r"^streamlink_only_info_.*$"))
+    def handle_streamlink_info(ack, body, client, logger):
+        """Handle info button for StreamLink flow (no-op for now)."""
         ack()

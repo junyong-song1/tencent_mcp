@@ -105,10 +105,16 @@ def register(app: App, services):
             return
 
         if sub_cmd in ["list", "ls", "dashboard", ""]:
+            # Check if user is StreamLink-only user
+            is_streamlink_only = settings.is_streamlink_only_user(user_id)
+
             try:
                 # Show loading modal
-                logger.info(f"/tencent: Opening loading modal...")
-                loading_view = DashboardUI.create_loading_modal(channel_id)
+                logger.info(f"/tencent: Opening loading modal... (streamlink_only={is_streamlink_only})")
+                if is_streamlink_only:
+                    loading_view = DashboardUI.create_streamlink_only_loading_modal(channel_id)
+                else:
+                    loading_view = DashboardUI.create_loading_modal(channel_id)
                 resp = client.views_open(trigger_id=trigger_id, view=loading_view)
                 view_id = resp["view"]["id"]
                 logger.info(f"/tencent: Loading modal opened, view_id={view_id}")
@@ -122,23 +128,45 @@ def register(app: App, services):
                 def async_load():
                     try:
                         logger.info(f"/tencent: Fetching resources...")
-                        channels = services.tencent_client.list_all_resources()
-                        logger.info(f"/tencent: Got {len(channels)} resources, building modal...")
-                        modal_view = DashboardUI.create_dashboard_modal(
-                            channels=channels,
-                            keyword=initial_keyword,
-                            channel_id=channel_id,
-                        )
+                        all_resources = services.tencent_client.list_all_resources()
+
+                        if is_streamlink_only:
+                            # StreamLink-only dashboard
+                            flows = [r for r in all_resources if r.get("service") == "StreamLink"]
+                            streamlive_channels = [r for r in all_resources if r.get("service") == "StreamLive"]
+                            logger.info(f"/tencent: Got {len(flows)} StreamLink flows")
+
+                            # Build flow to channel map with failover info
+                            flow_to_channel_map = _build_flow_to_channel_map(
+                                services, flows, streamlive_channels
+                            )
+
+                            modal_view = DashboardUI.create_streamlink_only_modal(
+                                flows=flows,
+                                flow_to_channel_map=flow_to_channel_map,
+                                keyword=initial_keyword,
+                                channel_id=channel_id,
+                            )
+                        else:
+                            # Full dashboard
+                            logger.info(f"/tencent: Got {len(all_resources)} resources, building modal...")
+                            modal_view = DashboardUI.create_dashboard_modal(
+                                channels=all_resources,
+                                keyword=initial_keyword,
+                                channel_id=channel_id,
+                            )
+
                         logger.info(f"/tencent: Updating modal view...")
                         client.views_update(view_id=view_id, view=modal_view)
                         logger.info(f"/tencent: Modal updated successfully")
                     except Exception as e:
                         logger.error(f"Async dashboard load failed: {e}", exc_info=True)
+                        callback_id = "streamlink_only_modal_view" if is_streamlink_only else "dashboard_modal_view"
                         client.views_update(
                             view_id=view_id,
                             view={
                                 "type": "modal",
-                                "callback_id": "dashboard_modal_view",
+                                "callback_id": callback_id,
                                 "private_metadata": channel_id,
                                 "title": {"type": "plain_text", "text": "오류 발생"},
                                 "close": {"type": "plain_text", "text": "닫기"},
@@ -303,6 +331,48 @@ def _get_help_text() -> str:
 - 채널 탭: StreamLive/StreamLink 리소스 조회 및 제어
 - 스케줄 탭: 방송 스케줄 관리 (추가/수정/삭제)
 """
+
+
+def _build_flow_to_channel_map(services, flows: list, streamlive_channels: list) -> dict:
+    """Build a map from flow_id to linked StreamLive channel info with failover status.
+
+    Returns:
+        {flow_id: {"channel_name": str, "channel_id": str, "active_input": str, "failover_info": dict}}
+    """
+    from app.services.linkage import LinkageMatcher
+
+    flow_to_channel_map = {}
+
+    # For each StreamLive channel, find linked flows
+    for channel in streamlive_channels:
+        channel_id = channel.get("id", "")
+        channel_name = channel.get("name", "")
+
+        # Find flows linked to this channel
+        linked_flows = LinkageMatcher.find_linked_flows(channel, flows)
+
+        if linked_flows:
+            # Get failover status for this channel (only once per channel)
+            try:
+                input_status = services.tencent_client.get_channel_input_status(channel_id)
+                active_input = input_status.get("active_input", "unknown") if input_status else "unknown"
+                failover_info = input_status.get("log_based_detection", {}) if input_status else {}
+            except Exception as e:
+                logger.debug(f"Could not get input status for {channel_id}: {e}")
+                active_input = "unknown"
+                failover_info = {}
+
+            # Map each linked flow to this channel's info
+            for flow in linked_flows:
+                flow_id = flow.get("id", "")
+                flow_to_channel_map[flow_id] = {
+                    "channel_id": channel_id,
+                    "channel_name": channel_name,
+                    "active_input": active_input,
+                    "failover_info": failover_info,
+                }
+
+    return flow_to_channel_map
 
 
 def _build_flow_stats_blocks(flow_name: str, flow_id: str, status: str, stats: dict) -> list:

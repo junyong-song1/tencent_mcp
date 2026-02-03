@@ -452,3 +452,287 @@ class DashboardUI:
             elements.append(create_button("다음 ▶", "dashboard_page_next"))
 
         return create_actions_block(elements)
+
+    # ========== StreamLink Only Dashboard ==========
+
+    STREAMLINK_ITEMS_PER_PAGE = 20
+
+    @classmethod
+    def create_streamlink_only_loading_modal(cls, channel_id: str = "") -> dict:
+        """Create a loading modal for StreamLink-only dashboard."""
+        return {
+            "type": "modal",
+            "callback_id": "streamlink_only_modal_view",
+            "private_metadata": json.dumps({"channel_id": channel_id, "page": 0}),
+            "title": {"type": "plain_text", "text": "StreamLink"},
+            "close": {"type": "plain_text", "text": "닫기"},
+            "blocks": [
+                create_section_block(":hourglass_flowing_sand: StreamLink Flow 정보를 가져오고 있습니다..."),
+            ],
+        }
+
+    @classmethod
+    def create_streamlink_only_modal(
+        cls,
+        flows: List[Dict],
+        flow_to_channel_map: Dict[str, Dict],
+        status_filter: str = "all",
+        keyword: str = "",
+        channel_id: str = "",
+        page: int = 0,
+    ) -> dict:
+        """Create StreamLink-only dashboard modal for external partners.
+
+        Args:
+            flows: List of StreamLink flow resources
+            flow_to_channel_map: Map of flow_id to linked StreamLive channel info
+                                 {flow_id: {"channel_name": str, "active_input": str, "failover_info": dict}}
+            status_filter: Filter by status (all, running, stopped)
+            keyword: Search keyword
+            channel_id: Slack channel ID
+            page: Current page number
+        """
+        blocks = []
+
+        # Header
+        blocks.append({
+            "type": "header",
+            "text": {"type": "plain_text", "text": "📡 StreamLink 대시보드", "emoji": True}
+        })
+
+        # Filter controls
+        blocks.append(cls._create_streamlink_filter_block(status_filter))
+        blocks.append(cls._create_streamlink_search_block(keyword))
+        blocks.append(create_divider_block())
+
+        # Filter flows
+        filtered_flows = cls._filter_streamlink_flows(flows, status_filter, keyword)
+
+        # Summary
+        running = sum(1 for f in flows if f.get("status") == "running")
+        stopped = sum(1 for f in flows if f.get("status") in ["stopped", "idle"])
+        blocks.append(
+            create_context_block(
+                f":bar_chart: 전체 {len(flows)}개 | "
+                f":large_green_circle: 실행 {running} | "
+                f":red_circle: 중지 {stopped} | "
+                f":mag: 필터 결과 {len(filtered_flows)}개"
+            )
+        )
+        blocks.append(create_divider_block())
+
+        # Pagination
+        total_pages = max(1, (len(filtered_flows) + cls.STREAMLINK_ITEMS_PER_PAGE - 1) // cls.STREAMLINK_ITEMS_PER_PAGE)
+        page = max(0, min(page, total_pages - 1))
+        start_idx = page * cls.STREAMLINK_ITEMS_PER_PAGE
+        end_idx = min(start_idx + cls.STREAMLINK_ITEMS_PER_PAGE, len(filtered_flows))
+        page_flows = filtered_flows[start_idx:end_idx]
+
+        # Flow cards
+        if not page_flows:
+            blocks.append(
+                create_section_block(":mag: 검색 결과가 없습니다.")
+            )
+        else:
+            for flow in page_flows:
+                flow_blocks = cls._create_streamlink_flow_card(flow, flow_to_channel_map)
+                blocks.extend(flow_blocks)
+                if len(blocks) > 90:
+                    break
+
+        # Pagination controls
+        if total_pages > 1:
+            blocks.append(create_divider_block())
+            blocks.append(cls._create_streamlink_pagination_block(page, total_pages))
+
+        # Refresh button
+        blocks.append(create_divider_block())
+        blocks.append(
+            create_actions_block([
+                create_button("🔄 새로고침", "streamlink_only_refresh", style="primary"),
+            ])
+        )
+
+        metadata = json.dumps({
+            "channel_id": channel_id,
+            "page": page,
+            "status_filter": status_filter,
+            "keyword": keyword,
+        })
+
+        return {
+            "type": "modal",
+            "callback_id": "streamlink_only_modal_view",
+            "private_metadata": metadata,
+            "title": {"type": "plain_text", "text": "StreamLink"},
+            "close": {"type": "plain_text", "text": "닫기"},
+            "blocks": blocks[:100],
+        }
+
+    @classmethod
+    def _filter_streamlink_flows(
+        cls, flows: List[Dict], status_filter: str, keyword: str
+    ) -> List[Dict]:
+        """Filter StreamLink flows by status and keyword."""
+        filtered = flows
+
+        # Status filter
+        if status_filter == "running":
+            filtered = [f for f in filtered if f.get("status") == "running"]
+        elif status_filter == "stopped":
+            filtered = [f for f in filtered if f.get("status") in ["stopped", "idle"]]
+
+        # Keyword filter
+        if keyword:
+            keyword_lower = keyword.lower()
+            filtered = [
+                f for f in filtered
+                if keyword_lower in f.get("name", "").lower()
+                or keyword_lower in f.get("id", "").lower()
+            ]
+
+        return filtered
+
+    @classmethod
+    def _create_streamlink_filter_block(cls, status_filter: str) -> dict:
+        """Create filter dropdown for StreamLink dashboard."""
+        status_options = [
+            {"text": {"type": "plain_text", "text": "전체 상태"}, "value": "all"},
+            {"text": {"type": "plain_text", "text": "실행 중"}, "value": "running"},
+            {"text": {"type": "plain_text", "text": "중지됨"}, "value": "stopped"},
+        ]
+
+        status_initial = next(
+            (o for o in status_options if o["value"] == status_filter),
+            status_options[0],
+        )
+
+        return {
+            "type": "actions",
+            "block_id": "streamlink_only_filters",
+            "elements": [
+                {
+                    "type": "static_select",
+                    "action_id": "streamlink_only_filter_status",
+                    "placeholder": {"type": "plain_text", "text": "상태 선택"},
+                    "options": status_options,
+                    "initial_option": status_initial,
+                },
+            ],
+        }
+
+    @classmethod
+    def _create_streamlink_search_block(cls, keyword: str = "") -> dict:
+        """Create search input for StreamLink dashboard."""
+        return {
+            "type": "input",
+            "block_id": "streamlink_only_search_block",
+            "dispatch_action": True,
+            "optional": True,
+            "element": {
+                "type": "plain_text_input",
+                "action_id": "streamlink_only_search_input",
+                "placeholder": {"type": "plain_text", "text": "Flow 이름 검색..."},
+                "initial_value": keyword,
+                "dispatch_action_config": {
+                    "trigger_actions_on": ["on_enter_pressed"],
+                },
+            },
+            "label": {"type": "plain_text", "text": "검색"},
+        }
+
+    @classmethod
+    def _create_streamlink_flow_card(
+        cls, flow: Dict, flow_to_channel_map: Dict[str, Dict]
+    ) -> List[dict]:
+        """Create a card block for a StreamLink flow."""
+        blocks = []
+
+        flow_id = flow.get("id", "")
+        flow_name = flow.get("name", "Unknown")
+        flow_status = flow.get("status", "unknown")
+        status_emoji = get_status_emoji(flow_status)
+
+        # Flow info
+        flow_text = f"{status_emoji} *{flow_name}*\n"
+        flow_text += f"ID: `{flow_id[:20]}...` | 상태: {flow_status}"
+
+        # Linked StreamLive channel info
+        channel_info = flow_to_channel_map.get(flow_id)
+        if channel_info:
+            ch_name = channel_info.get("channel_name", "")
+            active_input = channel_info.get("active_input", "unknown")
+            failover_info = channel_info.get("failover_info", {})
+
+            # Determine input status display
+            if active_input == "main":
+                input_display = "🟢 Main"
+            elif active_input == "backup":
+                # Check if this is due to failover
+                last_event = failover_info.get("last_event_type", "")
+                if last_event == "PipelineFailover":
+                    input_display = "🟡 Backup (Failover)"
+                else:
+                    input_display = "🟡 Backup"
+            else:
+                input_display = f"⚪ {active_input}"
+
+            flow_text += f"\n📺 연결: *{ch_name}* ({input_display})"
+
+            # Show failover time if recent
+            last_event_time = failover_info.get("last_event_time")
+            if last_event_time and failover_info.get("last_event_type") == "PipelineFailover":
+                flow_text += f"\n└ 전환: {last_event_time}"
+
+        # Control button
+        if flow_status in ["stopped", "idle"]:
+            control_btn = {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "▶️ 시작", "emoji": True},
+                "action_id": f"streamlink_only_start_{flow_id}",
+                "value": f"StreamLink:{flow_id}",
+                "style": "primary",
+            }
+        elif flow_status == "running":
+            control_btn = {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "⏹️ 중지", "emoji": True},
+                "action_id": f"streamlink_only_stop_{flow_id}",
+                "value": f"StreamLink:{flow_id}",
+                "style": "danger",
+            }
+        else:
+            control_btn = {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "ℹ️ 정보", "emoji": True},
+                "action_id": f"streamlink_only_info_{flow_id}",
+                "value": f"StreamLink:{flow_id}",
+            }
+
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": flow_text},
+            "accessory": control_btn,
+        })
+        blocks.append(create_divider_block())
+
+        return blocks
+
+    @classmethod
+    def _create_streamlink_pagination_block(cls, page: int, total_pages: int) -> dict:
+        """Create pagination controls for StreamLink dashboard."""
+        elements = []
+
+        if page > 0:
+            elements.append(create_button("◀ 이전", "streamlink_only_page_prev"))
+
+        elements.append({
+            "type": "button",
+            "text": {"type": "plain_text", "text": f"{page + 1} / {total_pages}"},
+            "action_id": "streamlink_only_page_info",
+        })
+
+        if page < total_pages - 1:
+            elements.append(create_button("다음 ▶", "streamlink_only_page_next"))
+
+        return create_actions_block(elements)
