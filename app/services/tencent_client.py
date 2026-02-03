@@ -197,9 +197,14 @@ class TencentCloudClient:
                         inp_id = str(getattr(inp, "Id", "")).strip()
                         if inp_id:
                             input_map[inp_id] = list(set(endpoints))
-                            input_name = getattr(inp, "Name", "")
-                            if input_name:
-                                input_name_map[inp_id] = input_name
+                            # Try multiple name attributes
+                            input_name = getattr(inp, "Name", "") or getattr(inp, "InputName", "")
+                            input_type = getattr(inp, "Type", "")
+                            if input_name or input_type:
+                                input_name_map[inp_id] = {
+                                    "name": input_name,
+                                    "type": input_type,
+                                }
 
                     with self._cache_lock:
                         self._linkage_cache[cache_key] = {
@@ -225,12 +230,19 @@ class TencentCloudClient:
                         input_endpoints.extend(input_map[att_id])
 
                     input_name = getattr(att, "Name", "")
-                    if not input_name and att_id in input_name_map:
-                        input_name = input_name_map[att_id]
+                    input_type = ""
+                    if att_id in input_name_map:
+                        inp_info = input_name_map[att_id]
+                        if isinstance(inp_info, dict):
+                            if not input_name:
+                                input_name = inp_info.get("name", "")
+                            input_type = inp_info.get("type", "")
+                        elif not input_name:
+                            input_name = inp_info  # backward compatibility
                     if not input_name:
                         input_name = att_id
 
-                    input_details.append({"id": att_id, "name": input_name})
+                    input_details.append({"id": att_id, "name": input_name, "type": input_type})
 
                 channels.append({
                     "id": ch_id,

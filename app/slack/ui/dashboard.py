@@ -719,14 +719,36 @@ class DashboardUI:
         })
 
         # Children (StreamLink flows)
-        for child in children[:5]:  # Limit to 5 children
-            child_block = cls._create_streamlink_child_block(child)
-            blocks.append(child_block)
+        if children:
+            for child in children[:5]:  # Limit to 5 children
+                child_block = cls._create_streamlink_child_block(child)
+                blocks.append(child_block)
 
-        if len(children) > 5:
-            blocks.append(
-                create_context_block(f"  _... 외 {len(children) - 5}개_")
-            )
+            if len(children) > 5:
+                blocks.append(
+                    create_context_block(f"  _... 외 {len(children) - 5}개_")
+                )
+        else:
+            # No StreamLink children - show StreamLive's own inputs (read-only)
+            input_attachments = parent.get("input_attachments", [])
+            if input_attachments:
+                for inp in input_attachments[:5]:
+                    inp_name = inp.get("name", inp.get("id", "Unknown"))
+                    inp_type = inp.get("type", "")
+                    # Shorten long UUID-style names
+                    if len(inp_name) > 12:
+                        inp_name = inp_name[:10] + "..."
+                    inp_text = f"  └ 🔌 *{inp_name}*"
+                    if inp_type:
+                        inp_text += f" | {inp_type}"
+                    blocks.append({
+                        "type": "context",
+                        "elements": [{"type": "mrkdwn", "text": inp_text}]
+                    })
+                if len(input_attachments) > 5:
+                    blocks.append(
+                        create_context_block(f"  _... 외 {len(input_attachments) - 5}개_")
+                    )
 
         blocks.append(create_divider_block())
         return blocks
