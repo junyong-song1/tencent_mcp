@@ -237,21 +237,31 @@ def register(app: App, services):
             threading.Thread(target=async_fetch_stats, daemon=True).start()
 
         elif sub_cmd in ["trace", "chain", "추적"]:
-            # /tencent trace <channel_name>
+            # /tencent trace <channel_name> [--refresh]
             if len(cmd_parts) < 2:
                 respond(
-                    ":information_source: *사용법*: `/tencent trace <채널명>`\n"
-                    "예시: `/tencent trace blackpaper`\n\n"
+                    ":information_source: *사용법*: `/tencent trace <채널명>` [--refresh]\n"
+                    "예시: `/tencent trace blackpaper`\n"
+                    "예시: `/tencent trace blackpaper --refresh` (캐시 새로고침)\n\n"
                     "소스 체인을 추적하여 StreamLink → StreamLive → StreamPackage 연결 상태를 확인합니다."
                 )
                 return
 
-            search_term = " ".join(cmd_parts[1:])
-            respond(f":hourglass_flowing_sand: `{search_term}` 소스 체인을 추적하고 있습니다...")
+            # Check for --refresh flag
+            force_refresh = "--refresh" in cmd_parts or "-r" in cmd_parts
+            search_parts = [p for p in cmd_parts[1:] if p not in ["--refresh", "-r"]]
+            search_term = " ".join(search_parts)
+
+            if force_refresh:
+                respond(f":hourglass_flowing_sand: `{search_term}` 소스 체인을 추적하고 있습니다... (캐시 새로고침)")
+            else:
+                respond(f":hourglass_flowing_sand: `{search_term}` 소스 체인을 추적하고 있습니다...")
 
             def async_trace():
                 try:
-                    blocks = _build_source_chain_blocks(services, search_term)
+                    if force_refresh:
+                        services.tencent_client.clear_cache()
+                    blocks = _build_source_chain_blocks(services, search_term, force_refresh=force_refresh)
                     client.chat_postMessage(
                         channel=channel_id,
                         blocks=blocks,
@@ -395,7 +405,7 @@ def _build_flow_stats_blocks(flow_name: str, flow_id: str, status: str, stats: d
     return blocks
 
 
-def _build_source_chain_blocks(services, search_term: str) -> list:
+def _build_source_chain_blocks(services, search_term: str, force_refresh: bool = False) -> list:
     """Build Slack blocks for source chain visualization."""
     from datetime import datetime
     from app.services.linkage import LinkageMatcher
@@ -409,8 +419,8 @@ def _build_source_chain_blocks(services, search_term: str) -> list:
         "unknown": ":grey_question:",
     }
 
-    # Get all resources
-    all_resources = services.tencent_client.list_all_resources()
+    # Get all resources (force_refresh if requested)
+    all_resources = services.tencent_client.list_all_resources(force_refresh=force_refresh)
     streamlive_channels = [r for r in all_resources if r.get("service") == "StreamLive"]
     streamlink_flows = [r for r in all_resources if r.get("service") == "StreamLink"]
 
