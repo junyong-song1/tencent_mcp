@@ -84,7 +84,9 @@ def register(app: App, services):
 
         # Check user permission
         settings = services.settings
-        if settings.allowed_users_list and user_id not in settings.allowed_users_list:
+        # User must be in ALLOWED_USERS or STREAMLINK_ONLY_USERS
+        all_allowed_users = set(settings.allowed_users_list) | set(settings.streamlink_only_users_list)
+        if all_allowed_users and user_id not in all_allowed_users:
             respond("접근 권한이 없습니다.")
             return
 
