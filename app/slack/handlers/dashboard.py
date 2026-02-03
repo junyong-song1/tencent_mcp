@@ -490,7 +490,7 @@ def register(app: App, services):
         def async_start_and_refresh():
             try:
                 # Start the flow
-                result = services.tencent_client.start_resource(resource_id, service)
+                result = services.tencent_client.start_streamlink_input(resource_id)
                 logger.info(f"StreamLink flow started: {resource_id}, result: {result}")
 
                 # Wait for status to stabilize and failover to occur
@@ -565,7 +565,7 @@ def register(app: App, services):
         def async_stop_and_refresh():
             try:
                 # Stop the flow
-                result = services.tencent_client.stop_resource(resource_id, service)
+                result = services.tencent_client.stop_streamlink_input(resource_id)
                 logger.info(f"StreamLink flow stopped: {resource_id}, result: {result}")
 
                 # Wait for status to stabilize and failover to occur
