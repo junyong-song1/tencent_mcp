@@ -513,26 +513,26 @@ class DashboardUI:
         # Filter hierarchy - only show groups with StreamLink children
         filtered_hierarchy = cls._filter_streamlink_hierarchy(hierarchy, status_filter, keyword)
 
-        # Count channels and flows
+        # Count channels and flows with status
         streamlive_groups = [g for g in hierarchy if g["parent"].get("service") == "StreamLive" and g["children"]]
         total_channels = len(streamlive_groups)
+        channels_running = sum(1 for g in streamlive_groups if g["parent"].get("status") == "running")
+        channels_stopped = total_channels - channels_running
+
         total_flows = sum(len(g["children"]) for g in streamlive_groups)
-        running = sum(
+        flows_running = sum(
             1 for g in streamlive_groups
             for c in g["children"] if c.get("status") == "running"
         )
-        stopped = sum(
-            1 for g in streamlive_groups
-            for c in g["children"] if c.get("status") in ["stopped", "idle"]
-        )
+        flows_stopped = total_flows - flows_running
+
         filtered_count = sum(len(g["children"]) for g in filtered_hierarchy)
 
         blocks.append(
             create_context_block(
-                f"📺 채널 {total_channels}개 | 📡 Flow {total_flows}개 | "
-                f":large_green_circle: 실행 {running} | "
-                f":red_circle: 중지 {stopped} | "
-                f":mag: 필터 결과 {filtered_count}개"
+                f"📺 채널 {total_channels} (🟢{channels_running} 🔴{channels_stopped}) | "
+                f"📡 Flow {total_flows} (🟢{flows_running} 🔴{flows_stopped}) | "
+                f"🔍 필터 {filtered_count}"
             )
         )
         blocks.append(create_divider_block())
