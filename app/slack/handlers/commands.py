@@ -133,12 +133,11 @@ def register(app: App, services):
                         if is_streamlink_only:
                             # StreamLink-only dashboard
                             flows = [r for r in all_resources if r.get("service") == "StreamLink"]
-                            streamlive_channels = [r for r in all_resources if r.get("service") == "StreamLive"]
                             logger.info(f"/tencent: Got {len(flows)} StreamLink flows")
 
-                            # Build flow to channel map with failover info
+                            # Build flow to channel map (same hierarchy as full dashboard)
                             flow_to_channel_map = _build_flow_to_channel_map(
-                                services, flows, streamlive_channels
+                                services, all_resources
                             )
 
                             modal_view = DashboardUI.create_streamlink_only_modal(
@@ -333,31 +332,40 @@ def _get_help_text() -> str:
 """
 
 
-def _build_flow_to_channel_map(services, flows: list, streamlive_channels: list, fetch_failover: bool = False) -> dict:
+def _build_flow_to_channel_map(services, all_resources: list, fetch_failover: bool = False) -> dict:
     """Build a map from flow_id to linked StreamLive channel info.
+
+    Uses the same hierarchy logic as the full dashboard (ResourceHierarchyBuilder).
 
     Args:
         services: Services container
-        flows: List of StreamLink flows
-        streamlive_channels: List of StreamLive channels
+        all_resources: List of all resources (StreamLive + StreamLink)
         fetch_failover: If True, fetch failover status (slow). Default False for fast loading.
 
     Returns:
         {flow_id: {"channel_name": str, "channel_id": str, "active_input": str, "failover_info": dict}}
     """
-    from app.services.linkage import LinkageMatcher
+    from app.services.linkage import ResourceHierarchyBuilder
 
     flow_to_channel_map = {}
 
-    # For each StreamLive channel, find linked flows
-    for channel in streamlive_channels:
-        channel_id = channel.get("id", "")
-        channel_name = channel.get("name", "")
+    # Use the same hierarchy builder as the full dashboard
+    hierarchy = ResourceHierarchyBuilder.build_hierarchy(all_resources)
 
-        # Find flows linked to this channel
-        linked_flows = LinkageMatcher.find_linked_flows(channel, flows)
+    # Process each group in hierarchy
+    for group in hierarchy:
+        parent = group["parent"]
+        children = group["children"]
 
-        if linked_flows:
+        # Skip if parent is StreamLink (unlinked flow - no parent channel)
+        if parent.get("service") == "StreamLink":
+            continue
+
+        # Parent is StreamLive channel
+        channel_id = parent.get("id", "")
+        channel_name = parent.get("name", "")
+
+        if children:
             active_input = None
             failover_info = {}
 
@@ -371,8 +379,8 @@ def _build_flow_to_channel_map(services, flows: list, streamlive_channels: list,
                     logger.debug(f"Could not get input status for {channel_id}: {e}")
                     active_input = "unknown"
 
-            # Map each linked flow to this channel's info
-            for flow in linked_flows:
+            # Map each child flow to this channel's info
+            for flow in children:
                 flow_id = flow.get("id", "")
                 flow_to_channel_map[flow_id] = {
                     "channel_id": channel_id,

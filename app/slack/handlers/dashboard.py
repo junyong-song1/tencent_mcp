@@ -276,12 +276,11 @@ def register(app: App, services):
 
                 all_resources = services.tencent_client.list_all_resources()
                 flows = [r for r in all_resources if r.get("service") == "StreamLink"]
-                streamlive_channels = [r for r in all_resources if r.get("service") == "StreamLive"]
 
-                # Build flow to channel map (fetch_failover=True only for refresh/after action)
+                # Build flow to channel map (same hierarchy as full dashboard)
                 from app.slack.handlers.commands import _build_flow_to_channel_map
                 flow_to_channel_map = _build_flow_to_channel_map(
-                    services, flows, streamlive_channels, fetch_failover=fetch_failover
+                    services, all_resources, fetch_failover=fetch_failover
                 )
 
                 modal_view = DashboardUI.create_streamlink_only_modal(
@@ -454,11 +453,10 @@ def register(app: App, services):
 
                 all_resources = services.tencent_client.list_all_resources()
                 flows = [r for r in all_resources if r.get("service") == "StreamLink"]
-                streamlive_channels = [r for r in all_resources if r.get("service") == "StreamLive"]
 
                 from app.slack.handlers.commands import _build_flow_to_channel_map
                 flow_to_channel_map = _build_flow_to_channel_map(
-                    services, flows, streamlive_channels, fetch_failover=True
+                    services, all_resources, fetch_failover=True
                 )
 
                 modal_view = DashboardUI.create_streamlink_only_modal(
@@ -529,11 +527,10 @@ def register(app: App, services):
 
                 all_resources = services.tencent_client.list_all_resources()
                 flows = [r for r in all_resources if r.get("service") == "StreamLink"]
-                streamlive_channels = [r for r in all_resources if r.get("service") == "StreamLive"]
 
                 from app.slack.handlers.commands import _build_flow_to_channel_map
                 flow_to_channel_map = _build_flow_to_channel_map(
-                    services, flows, streamlive_channels, fetch_failover=True
+                    services, all_resources, fetch_failover=True
                 )
 
                 modal_view = DashboardUI.create_streamlink_only_modal(
