@@ -537,27 +537,46 @@ def _build_source_chain_blocks(services, search_term: str, force_refresh: bool =
         try:
             input_status = services.tencent_client.get_channel_input_status(ch_id)
             if input_status:
-                active_input = input_status.get("active_pipeline", "unknown")
-                failover_info = input_status.get("message", "")
+                active_input = input_status.get("active_input", "unknown")
+                active_input_id = input_status.get("active_input_id")
+                primary_input_id = input_status.get("primary_input_id")
+                secondary_input_id = input_status.get("secondary_input_id")
+                verification_sources = input_status.get("verification_sources", [])
 
+                # Display active input with clear Main/Backup indicator
                 if active_input == "main":
                     ch_text += f"└ 활성 입력: 🟢 *Main*\n"
                 elif active_input == "backup":
-                    ch_text += f"└ 활성 입력: 🟡 *Backup*\n"
-                else:
+                    ch_text += f"└ 활성 입력: 🟡 *Backup* (Failover)\n"
+                elif active_input:
                     ch_text += f"└ 활성 입력: ⚪ {active_input}\n"
 
-                if failover_info:
-                    ch_text += f"└ 상세: {failover_info}\n"
+                # Show verification method
+                if verification_sources:
+                    ch_text += f"└ 검증: {', '.join(verification_sources)}\n"
 
-                # Show input details
+                # Show input details with clear labels
                 input_details = input_status.get("input_details", [])
-                for inp in input_details[:3]:
-                    inp_name = inp.get("name", "Unknown")
-                    inp_id = inp.get("id", "")
-                    is_active = inp_id == input_status.get("active_input_id")
-                    inp_emoji = "🟢" if is_active else "⚪"
-                    ch_text += f"   {inp_emoji} {inp_name}\n"
+                if input_details:
+                    ch_text += f"└ 입력 목록:\n"
+                    for inp in input_details[:4]:
+                        inp_name = inp.get("name", "")
+                        inp_id = inp.get("id", "")
+
+                        # Determine role (Main/Backup)
+                        role = ""
+                        if inp_id == primary_input_id:
+                            role = "(Main)"
+                        elif inp_id == secondary_input_id:
+                            role = "(Backup)"
+
+                        # Check if active
+                        is_active = inp_id == active_input_id
+                        inp_emoji = "🟢" if is_active else "⚪"
+
+                        # Display name or ID
+                        display_name = inp_name if inp_name and inp_name != inp_id else f"`{inp_id[:20]}...`"
+                        ch_text += f"   {inp_emoji} {display_name} {role}\n"
         except Exception as e:
             logger.debug(f"Could not get input status: {e}")
 
@@ -565,8 +584,6 @@ def _build_source_chain_blocks(services, search_term: str, force_refresh: bool =
             "type": "section",
             "text": {"type": "mrkdwn", "text": ch_text}
         })
-
-        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "↓"}]})
 
         # === StreamPackage ===
         try:
@@ -581,6 +598,8 @@ def _build_source_chain_blocks(services, search_term: str, force_refresh: bool =
                     break
 
             if matched_sp:
+                # Only show arrow if StreamPackage exists
+                blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "↓"}]})
                 blocks.append({
                     "type": "section",
                     "text": {"type": "mrkdwn", "text": "*📦 StreamPackage*"}
