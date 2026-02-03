@@ -236,6 +236,36 @@ def register(app: App, services):
 
             threading.Thread(target=async_fetch_stats, daemon=True).start()
 
+        elif sub_cmd in ["trace", "chain", "추적"]:
+            # /tencent trace <channel_name>
+            if len(cmd_parts) < 2:
+                respond(
+                    ":information_source: *사용법*: `/tencent trace <채널명>`\n"
+                    "예시: `/tencent trace blackpaper`\n\n"
+                    "소스 체인을 추적하여 StreamLink → StreamLive → StreamPackage 연결 상태를 확인합니다."
+                )
+                return
+
+            search_term = " ".join(cmd_parts[1:])
+            respond(f":hourglass_flowing_sand: `{search_term}` 소스 체인을 추적하고 있습니다...")
+
+            def async_trace():
+                try:
+                    blocks = _build_source_chain_blocks(services, search_term)
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        blocks=blocks,
+                        text=f"Source Chain: {search_term}",
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to trace source chain: {e}", exc_info=True)
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text=f":x: 소스 체인 추적 중 오류 발생: {str(e)}"
+                    )
+
+            threading.Thread(target=async_trace, daemon=True).start()
+
         elif sub_cmd == "help":
             respond(_get_help_text())
 
@@ -250,6 +280,7 @@ def _get_help_text() -> str:
 *사용법:*
 - `/tencent` 또는 `/tencent list` - 대시보드 열기
 - `/tencent list <검색어>` - 채널 검색
+- `/tencent trace <채널명>` - 소스 체인 추적 (SRE 모니터링)
 - `/tencent stats <flow_name>` - Flow 실시간 통계 조회
 - `/tencent schedule` (또는 `일정`, `스케줄`) - 스케줄 관리 화면 열기
 - `/tencent help` - 도움말 보기
@@ -358,6 +389,234 @@ def _build_flow_stats_blocks(flow_name: str, flow_id: str, status: str, stats: d
         "type": "context",
         "elements": [
             {"type": "mrkdwn", "text": f"조회 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"}
+        ]
+    })
+
+    return blocks
+
+
+def _build_source_chain_blocks(services, search_term: str) -> list:
+    """Build Slack blocks for source chain visualization."""
+    from datetime import datetime
+    from app.services.linkage import LinkageMatcher
+
+    blocks = []
+    status_emoji = {
+        "running": ":large_green_circle:",
+        "stopped": ":red_circle:",
+        "idle": ":white_circle:",
+        "error": ":warning:",
+        "unknown": ":grey_question:",
+    }
+
+    # Get all resources
+    all_resources = services.tencent_client.list_all_resources()
+    streamlive_channels = [r for r in all_resources if r.get("service") == "StreamLive"]
+    streamlink_flows = [r for r in all_resources if r.get("service") == "StreamLink"]
+
+    # Find matching StreamLive channel
+    search_lower = search_term.lower()
+    matched_channel = None
+
+    for ch in streamlive_channels:
+        ch_name = ch.get("name", "").lower()
+        ch_id = ch.get("id", "")
+        if ch_id == search_term or ch_name == search_lower or search_lower in ch_name:
+            matched_channel = ch
+            break
+
+    # If no StreamLive match, try StreamLink
+    matched_flow = None
+    if not matched_channel:
+        for flow in streamlink_flows:
+            flow_name = flow.get("name", "").lower()
+            flow_id = flow.get("id", "")
+            if flow_id == search_term or flow_name == search_lower or search_lower in flow_name:
+                matched_flow = flow
+                break
+
+    if not matched_channel and not matched_flow:
+        return [{
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f":x: `{search_term}`와 일치하는 채널 또는 Flow를 찾을 수 없습니다."}
+        }]
+
+    # Header
+    if matched_channel:
+        title = matched_channel.get("name", "Unknown")
+    else:
+        title = matched_flow.get("name", "Unknown")
+
+    blocks.append({
+        "type": "header",
+        "text": {"type": "plain_text", "text": f"🔗 Source Chain: {title}", "emoji": True}
+    })
+    blocks.append({"type": "divider"})
+
+    # Find linked flows for the channel
+    linked_flows = []
+    if matched_channel:
+        linked_flows = LinkageMatcher.find_linked_flows(matched_channel, streamlink_flows)
+    elif matched_flow:
+        linked_flows = [matched_flow]
+        # Try to find the parent channel
+        for ch in streamlive_channels:
+            ch_linked = LinkageMatcher.find_linked_flows(ch, [matched_flow])
+            if ch_linked:
+                matched_channel = ch
+                break
+
+    # === StreamLink Flows ===
+    if linked_flows:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*📡 StreamLink Flows*"}
+        })
+
+        for flow in linked_flows:
+            flow_name = flow.get("name", "Unknown")
+            flow_id = flow.get("id", "")
+            flow_status = flow.get("status", "unknown")
+            emoji = status_emoji.get(flow_status, ":grey_question:")
+            output_urls = flow.get("output_urls", [])
+
+            flow_text = f"{emoji} *{flow_name}*\n"
+            flow_text += f"└ ID: `{flow_id}`\n"
+            flow_text += f"└ 상태: {flow_status}\n"
+
+            if output_urls:
+                for url in output_urls[:2]:
+                    flow_text += f"└ Output: `{url[:60]}{'...' if len(url) > 60 else ''}`\n"
+                # VLC command for RTMP/SRT
+                first_url = output_urls[0]
+                if "rtmp://" in first_url or "srt://" in first_url:
+                    flow_text += f"└ 📋 VLC: `vlc \"{first_url}\"`\n"
+
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": flow_text}
+            })
+
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "↓"}]})
+
+    # === StreamLive Channel ===
+    if matched_channel:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*📺 StreamLive Channel*"}
+        })
+
+        ch_name = matched_channel.get("name", "Unknown")
+        ch_id = matched_channel.get("id", "")
+        ch_status = matched_channel.get("status", "unknown")
+        emoji = status_emoji.get(ch_status, ":grey_question:")
+
+        ch_text = f"{emoji} *{ch_name}*\n"
+        ch_text += f"└ ID: `{ch_id}`\n"
+        ch_text += f"└ 상태: {ch_status}\n"
+
+        # Get input status
+        try:
+            input_status = services.tencent_client.get_channel_input_status(ch_id)
+            if input_status:
+                active_input = input_status.get("active_pipeline", "unknown")
+                failover_info = input_status.get("message", "")
+
+                if active_input == "main":
+                    ch_text += f"└ 활성 입력: 🟢 *Main*\n"
+                elif active_input == "backup":
+                    ch_text += f"└ 활성 입력: 🟡 *Backup*\n"
+                else:
+                    ch_text += f"└ 활성 입력: ⚪ {active_input}\n"
+
+                if failover_info:
+                    ch_text += f"└ 상세: {failover_info}\n"
+
+                # Show input details
+                input_details = input_status.get("input_details", [])
+                for inp in input_details[:3]:
+                    inp_name = inp.get("name", "Unknown")
+                    inp_id = inp.get("id", "")
+                    is_active = inp_id == input_status.get("active_input_id")
+                    inp_emoji = "🟢" if is_active else "⚪"
+                    ch_text += f"   {inp_emoji} {inp_name}\n"
+        except Exception as e:
+            logger.debug(f"Could not get input status: {e}")
+
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": ch_text}
+        })
+
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "↓"}]})
+
+        # === StreamPackage ===
+        try:
+            sp_channels = services.tencent_client.list_streampackage_channels()
+
+            # Try to find matching StreamPackage by name
+            matched_sp = None
+            for sp in sp_channels:
+                sp_name = sp.get("name", "").lower()
+                if search_lower in sp_name or ch_name.lower() in sp_name:
+                    matched_sp = sp
+                    break
+
+            if matched_sp:
+                blocks.append({
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": "*📦 StreamPackage*"}
+                })
+
+                sp_name = matched_sp.get("name", "Unknown")
+                sp_id = matched_sp.get("id", "")
+                sp_status = matched_sp.get("status", "unknown")
+                emoji = status_emoji.get(sp_status, ":grey_question:")
+
+                sp_text = f"{emoji} *{sp_name}*\n"
+                sp_text += f"└ ID: `{sp_id}`\n"
+
+                # Get StreamPackage details for endpoints
+                try:
+                    sp_details = services.tencent_client.get_streampackage_channel_details(sp_id)
+                    if sp_details:
+                        input_details = sp_details.get("input_details", [])
+                        for idx, inp in enumerate(input_details[:2]):
+                            inp_name = inp.get("name", f"Input {idx+1}")
+                            inp_url = inp.get("url", "")
+                            if inp_url:
+                                sp_text += f"└ {inp_name}: `{inp_url[:50]}...`\n"
+                except Exception:
+                    pass
+
+                blocks.append({
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": sp_text}
+                })
+
+                # HLS playback link (if available)
+                # Note: Would need to get endpoint URL from StreamPackage API
+                blocks.append({
+                    "type": "context",
+                    "elements": [{"type": "mrkdwn", "text": "💡 HLS 재생 URL은 StreamPackage 콘솔에서 확인하세요."}]
+                })
+        except Exception as e:
+            logger.debug(f"Could not get StreamPackage info: {e}")
+
+    # Timestamp
+    blocks.append({"type": "divider"})
+    blocks.append({
+        "type": "context",
+        "elements": [
+            {"type": "mrkdwn", "text": f"🕐 조회 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"}
+        ]
+    })
+
+    # Warning about content verification
+    blocks.append({
+        "type": "context",
+        "elements": [
+            {"type": "mrkdwn", "text": "⚠️ 콘텐츠 검증: 위 정보는 연결 상태만 표시합니다. 실제 콘텐츠 확인은 재생 링크로 직접 확인하세요."}
         ]
     })
 
