@@ -131,18 +131,13 @@ def register(app: App, services):
                         all_resources = services.tencent_client.list_all_resources()
 
                         if is_streamlink_only:
-                            # StreamLink-only dashboard
-                            flows = [r for r in all_resources if r.get("service") == "StreamLink"]
-                            logger.info(f"/tencent: Got {len(flows)} StreamLink flows")
-
-                            # Build flow to channel map (same hierarchy as full dashboard)
-                            flow_to_channel_map = _build_flow_to_channel_map(
-                                services, all_resources
-                            )
+                            # StreamLink-only dashboard - use same hierarchy as full dashboard
+                            from app.services.linkage import ResourceHierarchyBuilder
+                            hierarchy = ResourceHierarchyBuilder.build_hierarchy(all_resources)
+                            logger.info(f"/tencent: Built hierarchy with {len(hierarchy)} groups")
 
                             modal_view = DashboardUI.create_streamlink_only_modal(
-                                flows=flows,
-                                flow_to_channel_map=flow_to_channel_map,
+                                hierarchy=hierarchy,
                                 keyword=initial_keyword,
                                 channel_id=channel_id,
                             )

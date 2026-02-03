@@ -474,8 +474,7 @@ class DashboardUI:
     @classmethod
     def create_streamlink_only_modal(
         cls,
-        flows: List[Dict],
-        flow_to_channel_map: Dict[str, Dict],
+        hierarchy: List[Dict],
         status_filter: str = "all",
         keyword: str = "",
         channel_id: str = "",
@@ -483,10 +482,11 @@ class DashboardUI:
     ) -> dict:
         """Create StreamLink-only dashboard modal for external partners.
 
+        Shows StreamLive channels as parents with their linked StreamLink flows as children.
+        Same hierarchy structure as the full dashboard.
+
         Args:
-            flows: List of StreamLink flow resources
-            flow_to_channel_map: Map of flow_id to linked StreamLive channel info
-                                 {flow_id: {"channel_name": str, "active_input": str, "failover_info": dict}}
+            hierarchy: List of {parent: StreamLive, children: [StreamLink flows]}
             status_filter: Filter by status (all, running, stopped)
             keyword: Search keyword
             channel_id: Slack channel ID
@@ -505,38 +505,47 @@ class DashboardUI:
         blocks.append(cls._create_streamlink_search_block(keyword))
         blocks.append(create_divider_block())
 
-        # Filter flows
-        filtered_flows = cls._filter_streamlink_flows(flows, status_filter, keyword)
+        # Filter hierarchy - only show groups with StreamLink children
+        filtered_hierarchy = cls._filter_streamlink_hierarchy(hierarchy, status_filter, keyword)
 
-        # Summary
-        running = sum(1 for f in flows if f.get("status") == "running")
-        stopped = sum(1 for f in flows if f.get("status") in ["stopped", "idle"])
+        # Count flows
+        total_flows = sum(len(g["children"]) for g in hierarchy if g["parent"].get("service") == "StreamLive")
+        running = sum(
+            1 for g in hierarchy if g["parent"].get("service") == "StreamLive"
+            for c in g["children"] if c.get("status") == "running"
+        )
+        stopped = sum(
+            1 for g in hierarchy if g["parent"].get("service") == "StreamLive"
+            for c in g["children"] if c.get("status") in ["stopped", "idle"]
+        )
+        filtered_count = sum(len(g["children"]) for g in filtered_hierarchy)
+
         blocks.append(
             create_context_block(
-                f":bar_chart: 전체 {len(flows)}개 | "
+                f":bar_chart: 전체 {total_flows}개 | "
                 f":large_green_circle: 실행 {running} | "
                 f":red_circle: 중지 {stopped} | "
-                f":mag: 필터 결과 {len(filtered_flows)}개"
+                f":mag: 필터 결과 {filtered_count}개"
             )
         )
         blocks.append(create_divider_block())
 
-        # Pagination
-        total_pages = max(1, (len(filtered_flows) + cls.STREAMLINK_ITEMS_PER_PAGE - 1) // cls.STREAMLINK_ITEMS_PER_PAGE)
+        # Pagination (by groups)
+        total_pages = max(1, (len(filtered_hierarchy) + cls.STREAMLINK_ITEMS_PER_PAGE - 1) // cls.STREAMLINK_ITEMS_PER_PAGE)
         page = max(0, min(page, total_pages - 1))
         start_idx = page * cls.STREAMLINK_ITEMS_PER_PAGE
-        end_idx = min(start_idx + cls.STREAMLINK_ITEMS_PER_PAGE, len(filtered_flows))
-        page_flows = filtered_flows[start_idx:end_idx]
+        end_idx = min(start_idx + cls.STREAMLINK_ITEMS_PER_PAGE, len(filtered_hierarchy))
+        page_groups = filtered_hierarchy[start_idx:end_idx]
 
-        # Flow cards
-        if not page_flows:
+        # Resource groups
+        if not page_groups:
             blocks.append(
                 create_section_block(":mag: 검색 결과가 없습니다.")
             )
         else:
-            for flow in page_flows:
-                flow_blocks = cls._create_streamlink_flow_card(flow, flow_to_channel_map)
-                blocks.extend(flow_blocks)
+            for group in page_groups:
+                group_blocks = cls._create_streamlink_group_blocks(group)
+                blocks.extend(group_blocks)
                 if len(blocks) > 90:
                     break
 
@@ -570,28 +579,128 @@ class DashboardUI:
         }
 
     @classmethod
-    def _filter_streamlink_flows(
-        cls, flows: List[Dict], status_filter: str, keyword: str
+    def _filter_streamlink_hierarchy(
+        cls, hierarchy: List[Dict], status_filter: str, keyword: str
     ) -> List[Dict]:
-        """Filter StreamLink flows by status and keyword."""
-        filtered = flows
+        """Filter hierarchy to only show groups with StreamLink children that match filters."""
+        filtered = []
 
-        # Status filter
-        if status_filter == "running":
-            filtered = [f for f in filtered if f.get("status") == "running"]
-        elif status_filter == "stopped":
-            filtered = [f for f in filtered if f.get("status") in ["stopped", "idle"]]
+        for group in hierarchy:
+            parent = group["parent"]
+            children = group["children"]
 
-        # Keyword filter
-        if keyword:
-            keyword_lower = keyword.lower()
-            filtered = [
-                f for f in filtered
-                if keyword_lower in f.get("name", "").lower()
-                or keyword_lower in f.get("id", "").lower()
-            ]
+            # Skip if parent is StreamLink (unlinked flow)
+            if parent.get("service") != "StreamLive":
+                continue
+
+            # Skip if no children
+            if not children:
+                continue
+
+            # Filter children by status
+            filtered_children = children
+            if status_filter == "running":
+                filtered_children = [c for c in filtered_children if c.get("status") == "running"]
+            elif status_filter == "stopped":
+                filtered_children = [c for c in filtered_children if c.get("status") in ["stopped", "idle"]]
+
+            # Filter by keyword (match parent or children)
+            if keyword:
+                keyword_lower = keyword.lower()
+                parent_match = (
+                    keyword_lower in parent.get("name", "").lower()
+                    or keyword_lower in parent.get("id", "").lower()
+                )
+                if parent_match:
+                    # Parent matches, include all filtered children
+                    pass
+                else:
+                    # Filter children by keyword
+                    filtered_children = [
+                        c for c in filtered_children
+                        if keyword_lower in c.get("name", "").lower()
+                        or keyword_lower in c.get("id", "").lower()
+                    ]
+
+            if filtered_children:
+                filtered.append({"parent": parent, "children": filtered_children})
 
         return filtered
+
+    @classmethod
+    def _create_streamlink_group_blocks(cls, group: Dict) -> List[dict]:
+        """Create blocks for a StreamLive parent with StreamLink children."""
+        blocks = []
+        parent = group["parent"]
+        children = group["children"]
+
+        # Parent (StreamLive channel) header
+        parent_status = parent.get("status", "unknown")
+        parent_emoji = get_status_emoji(parent_status)
+        parent_name = parent.get("name", "Unknown")
+        parent_id = parent.get("id", "")
+
+        parent_text = f"{parent_emoji} 📺 *{parent_name}*\n"
+        parent_text += f"ID: `{parent_id[:20]}...` | 상태: {parent_status}"
+
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": parent_text},
+        })
+
+        # Children (StreamLink flows)
+        for child in children[:5]:  # Limit to 5 children
+            child_block = cls._create_streamlink_child_block(child)
+            blocks.append(child_block)
+
+        if len(children) > 5:
+            blocks.append(
+                create_context_block(f"  _... 외 {len(children) - 5}개_")
+            )
+
+        blocks.append(create_divider_block())
+        return blocks
+
+    @classmethod
+    def _create_streamlink_child_block(cls, flow: Dict) -> dict:
+        """Create a block for a StreamLink flow (child)."""
+        flow_id = flow.get("id", "")
+        flow_name = flow.get("name", "Unknown")
+        flow_status = flow.get("status", "unknown")
+        status_emoji = get_status_emoji(flow_status)
+
+        flow_text = f"  └ {status_emoji} 📡 *{flow_name}* | 상태: {flow_status}"
+
+        # Control button
+        if flow_status in ["stopped", "idle"]:
+            control_btn = {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "▶️ 시작", "emoji": True},
+                "action_id": f"streamlink_only_start_{flow_id}",
+                "value": f"StreamLink:{flow_id}",
+                "style": "primary",
+            }
+        elif flow_status == "running":
+            control_btn = {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "⏹️ 중지", "emoji": True},
+                "action_id": f"streamlink_only_stop_{flow_id}",
+                "value": f"StreamLink:{flow_id}",
+                "style": "danger",
+            }
+        else:
+            control_btn = {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "ℹ️ 정보", "emoji": True},
+                "action_id": f"streamlink_only_info_{flow_id}",
+                "value": f"StreamLink:{flow_id}",
+            }
+
+        return {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": flow_text},
+            "accessory": control_btn,
+        }
 
     @classmethod
     def _create_streamlink_filter_block(cls, status_filter: str) -> dict:

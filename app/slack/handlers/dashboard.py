@@ -262,30 +262,22 @@ def register(app: App, services):
         }
 
     def async_update_streamlink_modal(
-        client, view_id, channel_id, status_filter, keyword, page=0, clear_cache=False, fetch_failover=False
+        client, view_id, channel_id, status_filter, keyword, page=0, clear_cache=False
     ):
-        """Update StreamLink-only modal asynchronously.
-
-        Args:
-            fetch_failover: If True, fetch failover status (slow). Only use after start/stop or refresh.
-        """
+        """Update StreamLink-only modal asynchronously."""
         def _update():
             try:
                 if clear_cache:
                     services.tencent_client.clear_cache()
 
                 all_resources = services.tencent_client.list_all_resources()
-                flows = [r for r in all_resources if r.get("service") == "StreamLink"]
 
-                # Build flow to channel map (same hierarchy as full dashboard)
-                from app.slack.handlers.commands import _build_flow_to_channel_map
-                flow_to_channel_map = _build_flow_to_channel_map(
-                    services, all_resources, fetch_failover=fetch_failover
-                )
+                # Build hierarchy (same as full dashboard)
+                from app.services.linkage import ResourceHierarchyBuilder
+                hierarchy = ResourceHierarchyBuilder.build_hierarchy(all_resources)
 
                 modal_view = DashboardUI.create_streamlink_only_modal(
-                    flows=flows,
-                    flow_to_channel_map=flow_to_channel_map,
+                    hierarchy=hierarchy,
                     status_filter=status_filter,
                     keyword=keyword,
                     channel_id=channel_id,
@@ -374,7 +366,6 @@ def register(app: App, services):
             state["keyword"],
             page=0,
             clear_cache=True,
-            fetch_failover=True,  # Fetch failover status on refresh
         )
 
     @app.action("streamlink_only_page_prev")
@@ -452,16 +443,13 @@ def register(app: App, services):
                 services.tencent_client.clear_cache()
 
                 all_resources = services.tencent_client.list_all_resources()
-                flows = [r for r in all_resources if r.get("service") == "StreamLink"]
 
-                from app.slack.handlers.commands import _build_flow_to_channel_map
-                flow_to_channel_map = _build_flow_to_channel_map(
-                    services, all_resources, fetch_failover=True
-                )
+                # Build hierarchy
+                from app.services.linkage import ResourceHierarchyBuilder
+                hierarchy = ResourceHierarchyBuilder.build_hierarchy(all_resources)
 
                 modal_view = DashboardUI.create_streamlink_only_modal(
-                    flows=flows,
-                    flow_to_channel_map=flow_to_channel_map,
+                    hierarchy=hierarchy,
                     status_filter=state["status_filter"],
                     keyword=state["keyword"],
                     channel_id=state["channel_id"],
@@ -526,16 +514,13 @@ def register(app: App, services):
                 services.tencent_client.clear_cache()
 
                 all_resources = services.tencent_client.list_all_resources()
-                flows = [r for r in all_resources if r.get("service") == "StreamLink"]
 
-                from app.slack.handlers.commands import _build_flow_to_channel_map
-                flow_to_channel_map = _build_flow_to_channel_map(
-                    services, all_resources, fetch_failover=True
-                )
+                # Build hierarchy
+                from app.services.linkage import ResourceHierarchyBuilder
+                hierarchy = ResourceHierarchyBuilder.build_hierarchy(all_resources)
 
                 modal_view = DashboardUI.create_streamlink_only_modal(
-                    flows=flows,
-                    flow_to_channel_map=flow_to_channel_map,
+                    hierarchy=hierarchy,
                     status_filter=state["status_filter"],
                     keyword=state["keyword"],
                     channel_id=state["channel_id"],
