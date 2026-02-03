@@ -680,9 +680,9 @@ class TencentCloudClient:
 
     def _get_active_pipeline_from_logs(self, channel_id: str, hours: int = 24) -> Optional[Dict]:
         """
-        Get active pipeline (main/backup) from channel logs.
+        Get active pipeline (main/backup/silent) from channel logs.
 
-        Checks PipelineFailover and PipelineRecover events to determine
+        Checks PipelineFailover, PipelineRecover, and SilentSwitch events to determine
         which pipeline is currently serving.
 
         Args:
@@ -691,7 +691,7 @@ class TencentCloudClient:
 
         Returns:
             Dict with:
-                - active_pipeline: "main" or "backup"
+                - active_pipeline: "main", "backup", or "silent" (placeholder image)
                 - last_event_type: Last failover-related event type
                 - last_event_time: Timestamp of last event
                 - failover_count: Number of failovers in the period
@@ -735,7 +735,8 @@ class TencentCloudClient:
                     # Only collect failover-related events
                     # InputFailover = switched to backup, InputRecover = switched back to main
                     # PipelineFailover/PipelineRecover = similar pipeline-level events
-                    if log_type in ['PipelineFailover', 'PipelineRecover', 'InputFailover', 'InputRecover']:
+                    # SilentSwitch = switched to placeholder image (no input signal)
+                    if log_type in ['PipelineFailover', 'PipelineRecover', 'InputFailover', 'InputRecover', 'SilentSwitch']:
                         failover_events.append({
                             'type': log_type,
                             'time': log_time,
@@ -765,7 +766,11 @@ class TencentCloudClient:
             # Logic:
             # - PipelineFailover/InputFailover (most recent) → backup is active
             # - PipelineRecover/InputRecover (most recent) → main is active
-            if last_failover_type in ['PipelineFailover', 'InputFailover']:
+            # - SilentSwitch (most recent) → placeholder image (no input signal)
+            if last_failover_type == 'SilentSwitch':
+                active_pipeline = "silent"
+                message = f"{last_failover_type} 발생 ({last_failover_time}) - 대기 이미지로 전환됨 (입력 신호 없음)"
+            elif last_failover_type in ['PipelineFailover', 'InputFailover']:
                 active_pipeline = "backup"
                 message = f"{last_failover_type} 발생 ({last_failover_time}) - backup으로 서비스 중"
             else:  # PipelineRecover or InputRecover

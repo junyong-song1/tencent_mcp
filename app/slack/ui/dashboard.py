@@ -1,5 +1,6 @@
 """Dashboard UI components."""
 import json
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 
 from app.config import get_settings
@@ -676,6 +677,8 @@ class DashboardUI:
                     parent_text += " | 🟡 Backup (Failover)"
                 else:
                     parent_text += " | 🟡 Backup"
+            elif active_input == "silent":
+                parent_text += " | 🟣 대기 이미지"
             elif active_input == "no_signal":
                 parent_text += " | ⚫ 신호 없음"
             else:
@@ -683,11 +686,19 @@ class DashboardUI:
 
         parent_text += f"\nID: `{parent_id[:20]}...` | 상태: {parent_status}"
 
-        # Add failover time if available
-        if active_input == "backup" and log_info.get("last_event_type") == "PipelineFailover":
+        # Add failover time if available (convert UTC to Seoul time)
+        if active_input in ["backup", "silent"] and log_info.get("last_event_type") in ["PipelineFailover", "InputFailover", "SilentSwitch"]:
             last_time = log_info.get("last_event_time")
             if last_time:
-                parent_text += f" | 전환: {last_time}"
+                try:
+                    # Parse UTC timestamp and convert to Seoul time (UTC+9)
+                    utc_dt = datetime.fromisoformat(last_time.replace("Z", "+00:00"))
+                    seoul_tz = timezone(timedelta(hours=9))
+                    seoul_dt = utc_dt.astimezone(seoul_tz)
+                    formatted_time = seoul_dt.strftime("%H:%M:%S")
+                    parent_text += f" | 전환: {formatted_time}"
+                except Exception:
+                    parent_text += f" | 전환: {last_time}"
 
         blocks.append({
             "type": "section",
