@@ -676,6 +676,8 @@ class DashboardUI:
                     parent_text += " | 🟡 Backup (Failover)"
                 else:
                     parent_text += " | 🟡 Backup"
+            elif active_input == "no_signal":
+                parent_text += " | ⚫ 신호 없음"
             else:
                 parent_text += f" | ⚪ {active_input}"
 

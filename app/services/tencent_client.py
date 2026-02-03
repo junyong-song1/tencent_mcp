@@ -1283,6 +1283,30 @@ class TencentCloudClient:
                                 verification_sources.append("InputOrder")
                             break
             
+            # Check if there's actual signal on any input
+            # If no log event and no signal detected, mark as "no_signal"
+            has_signal = False
+            if log_based_result and log_based_result.get("last_event_type"):
+                # Log event exists, trust the log-based detection
+                has_signal = True
+            else:
+                # Check input_states for actual network activity
+                for inp_id, state in input_states.items():
+                    bandwidth = state.get("bandwidth", 0)
+                    if bandwidth and bandwidth > 0:
+                        has_signal = True
+                        break
+                    # Also check QueryInputStreamState results
+                    if state.get("is_active") or state.get("status") == 1:
+                        has_signal = True
+                        break
+
+            if not has_signal and active_input_type:
+                # No actual signal detected, mark as no_signal
+                logger.info(f"No signal detected on any input for channel {channel_id}")
+                active_input_type = "no_signal"
+                verification_sources.append("NoSignal")
+
             # Build result with multi-stage verification info
             result = {
                 "channel_id": channel_id,
