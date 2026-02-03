@@ -809,6 +809,20 @@ class TencentCloudClient:
                     "active_input": None,
                     "message": "연결된 입력이 없습니다.",
                 }
+
+            # Fetch all inputs to get names (AttachedInputs only has ID, not Name)
+            input_id_to_name = {}
+            try:
+                inp_req = mdl_models.DescribeStreamLiveInputsRequest()
+                inp_resp = client.DescribeStreamLiveInputs(inp_req)
+                all_inputs = inp_resp.Infos if hasattr(inp_resp, "Infos") else []
+                for inp in all_inputs:
+                    inp_id = getattr(inp, "Id", "")
+                    inp_name = getattr(inp, "Name", "")
+                    if inp_id and inp_name:
+                        input_id_to_name[inp_id] = inp_name
+            except Exception as e:
+                logger.debug(f"Could not fetch input names: {e}")
             
             # Get StreamPackage ID from OutputGroups
             streampackage_id = None
@@ -829,7 +843,8 @@ class TencentCloudClient:
             
             for att in attached_inputs:
                 att_id = str(getattr(att, "Id", att)).strip()
-                att_name = getattr(att, "Name", "") or att_id
+                # Get name from input_id_to_name mapping (AttachedInputs doesn't have Name)
+                att_name = input_id_to_name.get(att_id, "")
                 
                 # Check for failover settings
                 failover_settings = getattr(att, "FailOverSettings", None)
