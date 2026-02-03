@@ -224,6 +224,39 @@ def register(app: App, services):
 
     # ========== StreamLink Only Dashboard Handlers ==========
 
+    def _build_failover_map(services, hierarchy: list) -> dict:
+        """Build a map of channel_id to failover status.
+
+        Args:
+            services: Services container
+            hierarchy: List of {parent: resource, children: [resources]}
+
+        Returns:
+            {channel_id: {"active_input": str, "failover_info": dict}}
+        """
+        failover_map = {}
+
+        for group in hierarchy:
+            parent = group["parent"]
+            children = group["children"]
+
+            # Only process StreamLive parents with children
+            if parent.get("service") != "StreamLive" or not children:
+                continue
+
+            channel_id = parent.get("id", "")
+            try:
+                input_status = services.tencent_client.get_channel_input_status(channel_id)
+                if input_status:
+                    failover_map[channel_id] = {
+                        "active_input": input_status.get("active_input"),
+                        "failover_info": input_status.get("log_based_detection", {}),
+                    }
+            except Exception as e:
+                logger.debug(f"Could not get failover status for {channel_id}: {e}")
+
+        return failover_map
+
     def extract_streamlink_modal_state(view: dict) -> dict:
         """Extract filter state from StreamLink-only modal view."""
         filters = view.get("state", {}).get("values", {}).get("streamlink_only_filters", {})
@@ -262,9 +295,13 @@ def register(app: App, services):
         }
 
     def async_update_streamlink_modal(
-        client, view_id, channel_id, status_filter, keyword, page=0, clear_cache=False
+        client, view_id, channel_id, status_filter, keyword, page=0, clear_cache=False, fetch_failover=False
     ):
-        """Update StreamLink-only modal asynchronously."""
+        """Update StreamLink-only modal asynchronously.
+
+        Args:
+            fetch_failover: If True, fetch failover status for each channel (slow).
+        """
         def _update():
             try:
                 if clear_cache:
@@ -276,12 +313,18 @@ def register(app: App, services):
                 from app.services.linkage import ResourceHierarchyBuilder
                 hierarchy = ResourceHierarchyBuilder.build_hierarchy(all_resources)
 
+                # Build failover map if requested
+                failover_map = {}
+                if fetch_failover:
+                    failover_map = _build_failover_map(services, hierarchy)
+
                 modal_view = DashboardUI.create_streamlink_only_modal(
                     hierarchy=hierarchy,
                     status_filter=status_filter,
                     keyword=keyword,
                     channel_id=channel_id,
                     page=page,
+                    failover_map=failover_map,
                 )
                 client.views_update(view_id=view_id, view=modal_view)
             except Exception as e:
@@ -366,6 +409,7 @@ def register(app: App, services):
             state["keyword"],
             page=0,
             clear_cache=True,
+            fetch_failover=True,  # Fetch failover status on refresh
         )
 
     @app.action("streamlink_only_page_prev")
@@ -448,12 +492,16 @@ def register(app: App, services):
                 from app.services.linkage import ResourceHierarchyBuilder
                 hierarchy = ResourceHierarchyBuilder.build_hierarchy(all_resources)
 
+                # Build failover map (to show failover status after action)
+                failover_map = _build_failover_map(services, hierarchy)
+
                 modal_view = DashboardUI.create_streamlink_only_modal(
                     hierarchy=hierarchy,
                     status_filter=state["status_filter"],
                     keyword=state["keyword"],
                     channel_id=state["channel_id"],
                     page=state["page"],
+                    failover_map=failover_map,
                 )
                 client.views_update(view_id=state["view_id"], view=modal_view)
 
@@ -519,12 +567,16 @@ def register(app: App, services):
                 from app.services.linkage import ResourceHierarchyBuilder
                 hierarchy = ResourceHierarchyBuilder.build_hierarchy(all_resources)
 
+                # Build failover map (to show failover status after action)
+                failover_map = _build_failover_map(services, hierarchy)
+
                 modal_view = DashboardUI.create_streamlink_only_modal(
                     hierarchy=hierarchy,
                     status_filter=state["status_filter"],
                     keyword=state["keyword"],
                     channel_id=state["channel_id"],
                     page=state["page"],
+                    failover_map=failover_map,
                 )
                 client.views_update(view_id=state["view_id"], view=modal_view)
 

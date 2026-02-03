@@ -479,6 +479,7 @@ class DashboardUI:
         keyword: str = "",
         channel_id: str = "",
         page: int = 0,
+        failover_map: Optional[Dict[str, Dict]] = None,
     ) -> dict:
         """Create StreamLink-only dashboard modal for external partners.
 
@@ -491,7 +492,11 @@ class DashboardUI:
             keyword: Search keyword
             channel_id: Slack channel ID
             page: Current page number
+            failover_map: Optional map of channel_id to failover info
+                         {channel_id: {"active_input": str, "failover_info": dict}}
         """
+        if failover_map is None:
+            failover_map = {}
         blocks = []
 
         # Header
@@ -544,7 +549,7 @@ class DashboardUI:
             )
         else:
             for group in page_groups:
-                group_blocks = cls._create_streamlink_group_blocks(group)
+                group_blocks = cls._create_streamlink_group_blocks(group, failover_map)
                 blocks.extend(group_blocks)
                 if len(blocks) > 90:
                     break
@@ -628,11 +633,13 @@ class DashboardUI:
         return filtered
 
     @classmethod
-    def _create_streamlink_group_blocks(cls, group: Dict) -> List[dict]:
+    def _create_streamlink_group_blocks(cls, group: Dict, failover_map: Dict[str, Dict] = None) -> List[dict]:
         """Create blocks for a StreamLive parent with StreamLink children."""
         blocks = []
         parent = group["parent"]
         children = group["children"]
+        if failover_map is None:
+            failover_map = {}
 
         # Parent (StreamLive channel) header
         parent_status = parent.get("status", "unknown")
@@ -640,8 +647,33 @@ class DashboardUI:
         parent_name = parent.get("name", "Unknown")
         parent_id = parent.get("id", "")
 
-        parent_text = f"{parent_emoji} 📺 *{parent_name}*\n"
-        parent_text += f"ID: `{parent_id[:20]}...` | 상태: {parent_status}"
+        # Build parent text with failover status if available
+        failover_info = failover_map.get(parent_id, {})
+        active_input = failover_info.get("active_input")
+        log_info = failover_info.get("failover_info", {})
+
+        parent_text = f"{parent_emoji} 📺 *{parent_name}*"
+
+        # Add failover status
+        if active_input:
+            if active_input == "main":
+                parent_text += " | 🟢 Main"
+            elif active_input == "backup":
+                last_event = log_info.get("last_event_type", "")
+                if last_event == "PipelineFailover":
+                    parent_text += " | 🟡 Backup (Failover)"
+                else:
+                    parent_text += " | 🟡 Backup"
+            else:
+                parent_text += f" | ⚪ {active_input}"
+
+        parent_text += f"\nID: `{parent_id[:20]}...` | 상태: {parent_status}"
+
+        # Add failover time if available
+        if active_input == "backup" and log_info.get("last_event_type") == "PipelineFailover":
+            last_time = log_info.get("last_event_time")
+            if last_time:
+                parent_text += f" | 전환: {last_time}"
 
         blocks.append({
             "type": "section",
