@@ -259,14 +259,37 @@ class TencentCloudClient:
             if hasattr(resp, "Info"):
                 info = resp.Info
                 output_urls = []
+                monitor_url = None  # RTMP_PULL monitor URL for playback
 
                 if hasattr(info, "OutputGroup"):
                     for og in info.OutputGroup:
                         protocol = getattr(og, "Protocol", "")
+                        output_name = getattr(og, "OutputName", "").lower()
+
+                        # Extract RTMP_PULL monitor URL for VLC playback
                         if protocol == "RTMP_PULL":
+                            if hasattr(og, "RTMPPullSettings") and og.RTMPPullSettings:
+                                server_urls = getattr(og.RTMPPullSettings, "ServerUrls", [])
+                                for url_info in server_urls:
+                                    # url_info can be a dict string or object
+                                    if isinstance(url_info, str):
+                                        try:
+                                            import json
+                                            url_data = json.loads(url_info)
+                                            tc_url = url_data.get("TcUrl", "")
+                                            stream_key = url_data.get("StreamKey", "")
+                                            if tc_url and stream_key:
+                                                monitor_url = f"{tc_url}/{stream_key}"
+                                        except:
+                                            pass
+                                    elif hasattr(url_info, "TcUrl"):
+                                        tc_url = getattr(url_info, "TcUrl", "")
+                                        stream_key = getattr(url_info, "StreamKey", "")
+                                        if tc_url and stream_key:
+                                            monitor_url = f"{tc_url}/{stream_key}"
                             continue
 
-                        if protocol == "RTMP" or "streamlive" in getattr(og, "OutputName", "").lower():
+                        if protocol == "RTMP" or "streamlive" in output_name:
                             if hasattr(og, "RTMPSettings") and og.RTMPSettings:
                                 dests = getattr(og.RTMPSettings, "Destinations", [])
                                 for d in dests:
@@ -290,6 +313,7 @@ class TencentCloudClient:
                 return {
                     "id": flow_id,
                     "output_urls": output_urls,
+                    "monitor_url": monitor_url,  # VLC playable URL
                     "status": self._normalize_streamlink_status(getattr(info, "State", "unknown")),
                     "inputs_count": len(input_group),
                     "input_details": input_details,
@@ -298,7 +322,7 @@ class TencentCloudClient:
         except Exception as e:
             logger.error(f"Failed to fetch detail for {flow_id}: {e}")
 
-        return {"id": flow_id, "output_urls": [], "status": "unknown", "inputs_count": 0, "input_details": []}
+        return {"id": flow_id, "output_urls": [], "monitor_url": None, "status": "unknown", "inputs_count": 0, "input_details": []}
 
     def list_streamlink_inputs(self) -> List[Dict]:
         """List StreamLink flows with incremental detail fetching."""
@@ -349,6 +373,7 @@ class TencentCloudClient:
                     "service": "StreamLink",
                     "type": "flow",
                     "output_urls": detail.get("output_urls", []),
+                    "monitor_url": detail.get("monitor_url"),  # VLC playable URL
                     "input_attachments": detail.get("input_details", []),
                 })
 

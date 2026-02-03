@@ -489,6 +489,7 @@ def _build_source_chain_blocks(services, search_term: str, force_refresh: bool =
             flow_status = flow.get("status", "unknown")
             emoji = status_emoji.get(flow_status, ":grey_question:")
             output_urls = flow.get("output_urls", [])
+            monitor_url = flow.get("monitor_url")  # RTMP_PULL URL for playback
 
             flow_text = f"{emoji} *{flow_name}*\n"
             flow_text += f"└ ID: `{flow_id}`\n"
@@ -497,10 +498,15 @@ def _build_source_chain_blocks(services, search_term: str, force_refresh: bool =
             if output_urls:
                 for url in output_urls[:2]:
                     flow_text += f"└ Output: `{url[:60]}{'...' if len(url) > 60 else ''}`\n"
-                # VLC command for RTMP/SRT
+
+            # VLC playback - prefer monitor_url (RTMP_PULL) over output_urls
+            if monitor_url:
+                flow_text += f"└ 🎬 *모니터*: `{monitor_url}`\n"
+                flow_text += f"└ 📋 VLC: `vlc \"{monitor_url}\"`\n"
+            elif output_urls:
                 first_url = output_urls[0]
                 if "rtmp://" in first_url or "srt://" in first_url:
-                    flow_text += f"└ 📋 VLC: `vlc \"{first_url}\"`\n"
+                    flow_text += f"└ ⚠️ _Push URL (재생 불가)_\n"
 
             blocks.append({
                 "type": "section",
