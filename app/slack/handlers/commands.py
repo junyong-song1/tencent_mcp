@@ -574,9 +574,12 @@ def _build_source_chain_blocks(services, search_term: str, force_refresh: bool =
                         is_active = inp_id == active_input_id
                         inp_emoji = "🟢" if is_active else "⚪"
 
-                        # Display name or ID
-                        display_name = inp_name if inp_name and inp_name != inp_id else f"`{inp_id[:20]}...`"
-                        ch_text += f"   {inp_emoji} {display_name} {role}\n"
+                        # Display name and ID
+                        if inp_name and inp_name != inp_id:
+                            ch_text += f"   {inp_emoji} *{inp_name}* {role}\n"
+                            ch_text += f"      `{inp_id}`\n"
+                        else:
+                            ch_text += f"   {inp_emoji} `{inp_id}` {role}\n"
         except Exception as e:
             logger.debug(f"Could not get input status: {e}")
 
