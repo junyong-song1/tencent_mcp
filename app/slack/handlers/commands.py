@@ -333,8 +333,14 @@ def _get_help_text() -> str:
 """
 
 
-def _build_flow_to_channel_map(services, flows: list, streamlive_channels: list) -> dict:
-    """Build a map from flow_id to linked StreamLive channel info with failover status.
+def _build_flow_to_channel_map(services, flows: list, streamlive_channels: list, fetch_failover: bool = False) -> dict:
+    """Build a map from flow_id to linked StreamLive channel info.
+
+    Args:
+        services: Services container
+        flows: List of StreamLink flows
+        streamlive_channels: List of StreamLive channels
+        fetch_failover: If True, fetch failover status (slow). Default False for fast loading.
 
     Returns:
         {flow_id: {"channel_name": str, "channel_id": str, "active_input": str, "failover_info": dict}}
@@ -352,15 +358,18 @@ def _build_flow_to_channel_map(services, flows: list, streamlive_channels: list)
         linked_flows = LinkageMatcher.find_linked_flows(channel, flows)
 
         if linked_flows:
-            # Get failover status for this channel (only once per channel)
-            try:
-                input_status = services.tencent_client.get_channel_input_status(channel_id)
-                active_input = input_status.get("active_input", "unknown") if input_status else "unknown"
-                failover_info = input_status.get("log_based_detection", {}) if input_status else {}
-            except Exception as e:
-                logger.debug(f"Could not get input status for {channel_id}: {e}")
-                active_input = "unknown"
-                failover_info = {}
+            active_input = None
+            failover_info = {}
+
+            # Only fetch failover status if requested (slow operation)
+            if fetch_failover:
+                try:
+                    input_status = services.tencent_client.get_channel_input_status(channel_id)
+                    active_input = input_status.get("active_input", "unknown") if input_status else "unknown"
+                    failover_info = input_status.get("log_based_detection", {}) if input_status else {}
+                except Exception as e:
+                    logger.debug(f"Could not get input status for {channel_id}: {e}")
+                    active_input = "unknown"
 
             # Map each linked flow to this channel's info
             for flow in linked_flows:

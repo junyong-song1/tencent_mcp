@@ -262,9 +262,13 @@ def register(app: App, services):
         }
 
     def async_update_streamlink_modal(
-        client, view_id, channel_id, status_filter, keyword, page=0, clear_cache=False
+        client, view_id, channel_id, status_filter, keyword, page=0, clear_cache=False, fetch_failover=False
     ):
-        """Update StreamLink-only modal asynchronously."""
+        """Update StreamLink-only modal asynchronously.
+
+        Args:
+            fetch_failover: If True, fetch failover status (slow). Only use after start/stop or refresh.
+        """
         def _update():
             try:
                 if clear_cache:
@@ -274,10 +278,10 @@ def register(app: App, services):
                 flows = [r for r in all_resources if r.get("service") == "StreamLink"]
                 streamlive_channels = [r for r in all_resources if r.get("service") == "StreamLive"]
 
-                # Build flow to channel map
+                # Build flow to channel map (fetch_failover=True only for refresh/after action)
                 from app.slack.handlers.commands import _build_flow_to_channel_map
                 flow_to_channel_map = _build_flow_to_channel_map(
-                    services, flows, streamlive_channels
+                    services, flows, streamlive_channels, fetch_failover=fetch_failover
                 )
 
                 modal_view = DashboardUI.create_streamlink_only_modal(
@@ -371,6 +375,7 @@ def register(app: App, services):
             state["keyword"],
             page=0,
             clear_cache=True,
+            fetch_failover=True,  # Fetch failover status on refresh
         )
 
     @app.action("streamlink_only_page_prev")
@@ -453,7 +458,7 @@ def register(app: App, services):
 
                 from app.slack.handlers.commands import _build_flow_to_channel_map
                 flow_to_channel_map = _build_flow_to_channel_map(
-                    services, flows, streamlive_channels
+                    services, flows, streamlive_channels, fetch_failover=True
                 )
 
                 modal_view = DashboardUI.create_streamlink_only_modal(
@@ -528,7 +533,7 @@ def register(app: App, services):
 
                 from app.slack.handlers.commands import _build_flow_to_channel_map
                 flow_to_channel_map = _build_flow_to_channel_map(
-                    services, flows, streamlive_channels
+                    services, flows, streamlive_channels, fetch_failover=True
                 )
 
                 modal_view = DashboardUI.create_streamlink_only_modal(

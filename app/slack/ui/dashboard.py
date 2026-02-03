@@ -661,28 +661,31 @@ class DashboardUI:
         channel_info = flow_to_channel_map.get(flow_id)
         if channel_info:
             ch_name = channel_info.get("channel_name", "")
-            active_input = channel_info.get("active_input", "unknown")
+            active_input = channel_info.get("active_input")  # None if not fetched
             failover_info = channel_info.get("failover_info", {})
 
-            # Determine input status display
-            if active_input == "main":
-                input_display = "🟢 Main"
-            elif active_input == "backup":
-                # Check if this is due to failover
-                last_event = failover_info.get("last_event_type", "")
-                if last_event == "PipelineFailover":
-                    input_display = "🟡 Backup (Failover)"
+            if active_input:
+                # Failover status was fetched - show full info
+                if active_input == "main":
+                    input_display = "🟢 Main"
+                elif active_input == "backup":
+                    last_event = failover_info.get("last_event_type", "")
+                    if last_event == "PipelineFailover":
+                        input_display = "🟡 Backup (Failover)"
+                    else:
+                        input_display = "🟡 Backup"
                 else:
-                    input_display = "🟡 Backup"
+                    input_display = f"⚪ {active_input}"
+
+                flow_text += f"\n📺 연결: *{ch_name}* ({input_display})"
+
+                # Show failover time if recent
+                last_event_time = failover_info.get("last_event_time")
+                if last_event_time and failover_info.get("last_event_type") == "PipelineFailover":
+                    flow_text += f"\n└ 전환: {last_event_time}"
             else:
-                input_display = f"⚪ {active_input}"
-
-            flow_text += f"\n📺 연결: *{ch_name}* ({input_display})"
-
-            # Show failover time if recent
-            last_event_time = failover_info.get("last_event_time")
-            if last_event_time and failover_info.get("last_event_type") == "PipelineFailover":
-                flow_text += f"\n└ 전환: {last_event_time}"
+                # Failover status not fetched - show channel name only
+                flow_text += f"\n📺 연결: *{ch_name}*"
 
         # Control button
         if flow_status in ["stopped", "idle"]:
