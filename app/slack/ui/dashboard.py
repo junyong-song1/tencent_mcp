@@ -525,7 +525,7 @@ class DashboardUI:
         filtered_hierarchy = cls._filter_streamlink_hierarchy(hierarchy, status_filter, keyword)
 
         # Count channels and flows with status
-        streamlive_groups = [g for g in hierarchy if g["parent"].get("service") == "StreamLive" and g["children"]]
+        streamlive_groups = [g for g in hierarchy if g["parent"].get("service") == "StreamLive"]
         total_channels = len(streamlive_groups)
         channels_running = sum(1 for g in streamlive_groups if g["parent"].get("status") == "running")
         channels_stopped = total_channels - channels_running
@@ -600,7 +600,7 @@ class DashboardUI:
     def _filter_streamlink_hierarchy(
         cls, hierarchy: List[Dict], status_filter: str, keyword: str
     ) -> List[Dict]:
-        """Filter hierarchy to only show groups with StreamLink children that match filters."""
+        """Filter hierarchy to show all StreamLive channels with optional StreamLink children."""
         filtered = []
 
         for group in hierarchy:
@@ -611,9 +611,7 @@ class DashboardUI:
             if parent.get("service") != "StreamLive":
                 continue
 
-            # Skip if no children
-            if not children:
-                continue
+            # No longer skip channels without children - show all StreamLive channels
 
             # Filter children by status
             filtered_children = children
@@ -623,16 +621,14 @@ class DashboardUI:
                 filtered_children = [c for c in filtered_children if c.get("status") in ["stopped", "idle"]]
 
             # Filter by keyword (match parent or children)
+            parent_match = True
             if keyword:
                 keyword_lower = keyword.lower()
                 parent_match = (
                     keyword_lower in parent.get("name", "").lower()
                     or keyword_lower in parent.get("id", "").lower()
                 )
-                if parent_match:
-                    # Parent matches, include all filtered children
-                    pass
-                else:
+                if not parent_match:
                     # Filter children by keyword
                     filtered_children = [
                         c for c in filtered_children
@@ -640,7 +636,16 @@ class DashboardUI:
                         or keyword_lower in c.get("id", "").lower()
                     ]
 
-            if filtered_children:
+            # Filter parent by status (when no children)
+            parent_status = parent.get("status", "")
+            parent_status_match = True
+            if status_filter == "running":
+                parent_status_match = parent_status == "running"
+            elif status_filter == "stopped":
+                parent_status_match = parent_status in ["stopped", "idle"]
+
+            # Include if: has matching children, or parent matches keyword and status
+            if filtered_children or (parent_match and parent_status_match):
                 filtered.append({"parent": parent, "children": filtered_children})
 
         return filtered
