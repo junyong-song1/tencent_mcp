@@ -896,15 +896,36 @@ class TencentCloudClient:
                                     stream_name = getattr(stream_info, "StreamName", "")
                                     status = getattr(stream_info, "Status", 0)
                                     
-                                    # Determine source type from address
-                                    source_type = None
-                                    if "ap-seoul-1" in input_address.lower():
-                                        source_type = "main"
-                                    elif "ap-seoul-2" in input_address.lower():
-                                        source_type = "backup"
-                                    
-                                    # Build full URL
+                                    # Build full URL first
                                     full_url = f"{input_address}/{app_name}/{stream_name}" if input_address else ""
+
+                                    # Determine source type from multiple sources
+                                    source_type = None
+
+                                    # 1. Check input name from input_details
+                                    for inp_detail in input_details:
+                                        if inp_detail.get("id") == inp_id:
+                                            inp_name = inp_detail.get("name", "").lower()
+                                            if "_b" in inp_name or "backup" in inp_name:
+                                                source_type = "backup"
+                                            elif "_m" in inp_name or "main" in inp_name:
+                                                source_type = "main"
+                                            break
+
+                                    # 2. Check stream URL path
+                                    if not source_type:
+                                        url_lower = full_url.lower()
+                                        if "/backup" in url_lower or "_backup" in url_lower:
+                                            source_type = "backup"
+                                        elif "/main" in url_lower or "_main" in url_lower:
+                                            source_type = "main"
+
+                                    # 3. Fallback to address region
+                                    if not source_type:
+                                        if "ap-seoul-2" in input_address.lower():
+                                            source_type = "backup"
+                                        elif "ap-seoul-1" in input_address.lower():
+                                            source_type = "main"
                                     
                                     if status == 1:  # Status 1 means active
                                         active_sources.append({
