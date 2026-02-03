@@ -733,7 +733,9 @@ class TencentCloudClient:
                     log_time = getattr(log, 'Time', '')
 
                     # Only interested in failover-related events
-                    if log_type in ['PipelineFailover', 'PipelineRecover']:
+                    # InputFailover = switched to backup, InputRecover = switched back to main
+                    # PipelineFailover/PipelineRecover = similar pipeline-level events
+                    if log_type in ['PipelineFailover', 'PipelineRecover', 'InputFailover', 'InputRecover']:
                         failover_events.append({
                             'type': log_type,
                             'time': log_time,
@@ -753,7 +755,7 @@ class TencentCloudClient:
             failover_events.sort(key=lambda x: x['time'], reverse=True)
 
             # Count failovers
-            failover_count = sum(1 for e in failover_events if e['type'] == 'PipelineFailover')
+            failover_count = sum(1 for e in failover_events if e['type'] in ['PipelineFailover', 'InputFailover'])
 
             # Determine active pipeline from the most recent event
             last_event = failover_events[0]
@@ -761,14 +763,14 @@ class TencentCloudClient:
             last_event_time = last_event['time']
 
             # Logic:
-            # - PipelineFailover (most recent) → backup is active
-            # - PipelineRecover (most recent) → main is active
-            if last_event_type == 'PipelineFailover':
+            # - PipelineFailover/InputFailover (most recent) → backup is active
+            # - PipelineRecover/InputRecover (most recent) → main is active
+            if last_event_type in ['PipelineFailover', 'InputFailover']:
                 active_pipeline = "backup"
-                message = f"PipelineFailover 발생 ({last_event_time}) - backup으로 서비스 중"
-            else:  # PipelineRecover
+                message = f"{last_event_type} 발생 ({last_event_time}) - backup으로 서비스 중"
+            else:  # PipelineRecover or InputRecover
                 active_pipeline = "main"
-                message = f"PipelineRecover 완료 ({last_event_time}) - main으로 서비스 중"
+                message = f"{last_event_type} 완료 ({last_event_time}) - main으로 서비스 중"
 
             logger.info(f"Channel {channel_id}: {message}")
 
