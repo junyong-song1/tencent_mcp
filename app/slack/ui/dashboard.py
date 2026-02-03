@@ -480,6 +480,7 @@ class DashboardUI:
         channel_id: str = "",
         page: int = 0,
         failover_map: Optional[Dict[str, Dict]] = None,
+        loading_message: Optional[str] = None,
     ) -> dict:
         """Create StreamLink-only dashboard modal for external partners.
 
@@ -494,6 +495,7 @@ class DashboardUI:
             page: Current page number
             failover_map: Optional map of channel_id to failover info
                          {channel_id: {"active_input": str, "failover_info": dict}}
+            loading_message: Optional loading message to show as banner
         """
         if failover_map is None:
             failover_map = {}
@@ -504,6 +506,14 @@ class DashboardUI:
             "type": "header",
             "text": {"type": "plain_text", "text": "📡 StreamLink 대시보드", "emoji": True}
         })
+
+        # Loading banner (if provided)
+        if loading_message:
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"⏳ *{loading_message}*"}
+            })
+            blocks.append(create_divider_block())
 
         # Filter controls
         blocks.append(cls._create_streamlink_filter_block(status_filter))

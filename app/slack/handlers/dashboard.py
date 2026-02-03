@@ -466,44 +466,48 @@ def register(app: App, services):
         """Handle start button for StreamLink flow."""
         ack()
         action = body["actions"][0]
-        action_id = action["action_id"]
         value = action["value"]  # "StreamLink:flow_id"
 
         service, resource_id = value.split(":", 1)
         state = extract_streamlink_modal_state(body["view"])
 
-        # Show processing state
-        client.views_update(
-            view_id=state["view_id"],
-            view={
-                "type": "modal",
-                "callback_id": "streamlink_only_modal_view",
-                "private_metadata": json.dumps({"channel_id": state["channel_id"]}),
-                "title": {"type": "plain_text", "text": "StreamLink"},
-                "close": {"type": "plain_text", "text": "닫기"},
-                "blocks": [
-                    {"type": "section", "text": {"type": "mrkdwn", "text": f":hourglass_flowing_sand: Flow를 시작하고 있습니다..."}},
-                ],
-            },
-        )
-
         def async_start_and_refresh():
             try:
+                # Get current hierarchy and show loading state
+                all_resources = services.tencent_client.list_all_resources()
+                from app.services.linkage import ResourceHierarchyBuilder
+                hierarchy = ResourceHierarchyBuilder.build_hierarchy(all_resources)
+
+                # Find flow name for display
+                flow_name = resource_id[:20]
+                for g in hierarchy:
+                    for c in g.get("children", []):
+                        if c.get("id") == resource_id:
+                            flow_name = c.get("name", flow_name)
+                            break
+
+                # Show dashboard with loading banner
+                loading_view = DashboardUI.create_streamlink_only_modal(
+                    hierarchy=hierarchy,
+                    status_filter=state["status_filter"],
+                    keyword=state["keyword"],
+                    channel_id=state["channel_id"],
+                    page=state["page"],
+                    loading_message=f"{flow_name} 시작 중...",
+                )
+                client.views_update(view_id=state["view_id"], view=loading_view)
+
                 # Start the flow
                 result = services.tencent_client.start_streamlink_input(resource_id)
                 logger.info(f"StreamLink flow started: {resource_id}, result: {result}")
 
-                # Wait for status to stabilize and failover to occur
+                # Wait for status to stabilize
                 import time
                 time.sleep(8)
 
                 # Clear cache and refresh
                 services.tencent_client.clear_cache()
-
                 all_resources = services.tencent_client.list_all_resources()
-
-                # Build hierarchy
-                from app.services.linkage import ResourceHierarchyBuilder
                 hierarchy = ResourceHierarchyBuilder.build_hierarchy(all_resources)
 
                 # Build failover map (to show failover status after action)
@@ -521,19 +525,22 @@ def register(app: App, services):
 
             except Exception as e:
                 logger.error(f"Failed to start StreamLink flow: {e}")
-                client.views_update(
-                    view_id=state["view_id"],
-                    view={
-                        "type": "modal",
-                        "callback_id": "streamlink_only_modal_view",
-                        "private_metadata": json.dumps({"channel_id": state["channel_id"]}),
-                        "title": {"type": "plain_text", "text": "오류"},
-                        "close": {"type": "plain_text", "text": "닫기"},
-                        "blocks": [
-                            {"type": "section", "text": {"type": "mrkdwn", "text": f":x: 시작 실패: {str(e)}"}},
-                        ],
-                    },
-                )
+                # Show error with dashboard
+                try:
+                    all_resources = services.tencent_client.list_all_resources()
+                    from app.services.linkage import ResourceHierarchyBuilder
+                    hierarchy = ResourceHierarchyBuilder.build_hierarchy(all_resources)
+                    modal_view = DashboardUI.create_streamlink_only_modal(
+                        hierarchy=hierarchy,
+                        status_filter=state["status_filter"],
+                        keyword=state["keyword"],
+                        channel_id=state["channel_id"],
+                        page=state["page"],
+                        loading_message=f"❌ 시작 실패: {str(e)[:50]}",
+                    )
+                    client.views_update(view_id=state["view_id"], view=modal_view)
+                except Exception:
+                    pass
 
         threading.Thread(target=async_start_and_refresh, daemon=True).start()
 
@@ -547,38 +554,43 @@ def register(app: App, services):
         service, resource_id = value.split(":", 1)
         state = extract_streamlink_modal_state(body["view"])
 
-        # Show processing state
-        client.views_update(
-            view_id=state["view_id"],
-            view={
-                "type": "modal",
-                "callback_id": "streamlink_only_modal_view",
-                "private_metadata": json.dumps({"channel_id": state["channel_id"]}),
-                "title": {"type": "plain_text", "text": "StreamLink"},
-                "close": {"type": "plain_text", "text": "닫기"},
-                "blocks": [
-                    {"type": "section", "text": {"type": "mrkdwn", "text": f":hourglass_flowing_sand: Flow를 중지하고 있습니다..."}},
-                ],
-            },
-        )
-
         def async_stop_and_refresh():
             try:
+                # Get current hierarchy and show loading state
+                all_resources = services.tencent_client.list_all_resources()
+                from app.services.linkage import ResourceHierarchyBuilder
+                hierarchy = ResourceHierarchyBuilder.build_hierarchy(all_resources)
+
+                # Find flow name for display
+                flow_name = resource_id[:20]
+                for g in hierarchy:
+                    for c in g.get("children", []):
+                        if c.get("id") == resource_id:
+                            flow_name = c.get("name", flow_name)
+                            break
+
+                # Show dashboard with loading banner
+                loading_view = DashboardUI.create_streamlink_only_modal(
+                    hierarchy=hierarchy,
+                    status_filter=state["status_filter"],
+                    keyword=state["keyword"],
+                    channel_id=state["channel_id"],
+                    page=state["page"],
+                    loading_message=f"{flow_name} 중지 중...",
+                )
+                client.views_update(view_id=state["view_id"], view=loading_view)
+
                 # Stop the flow
                 result = services.tencent_client.stop_streamlink_input(resource_id)
                 logger.info(f"StreamLink flow stopped: {resource_id}, result: {result}")
 
-                # Wait for status to stabilize and failover to occur
+                # Wait for status to stabilize
                 import time
                 time.sleep(8)
 
                 # Clear cache and refresh
                 services.tencent_client.clear_cache()
-
                 all_resources = services.tencent_client.list_all_resources()
-
-                # Build hierarchy
-                from app.services.linkage import ResourceHierarchyBuilder
                 hierarchy = ResourceHierarchyBuilder.build_hierarchy(all_resources)
 
                 # Build failover map (to show failover status after action)
@@ -596,19 +608,22 @@ def register(app: App, services):
 
             except Exception as e:
                 logger.error(f"Failed to stop StreamLink flow: {e}")
-                client.views_update(
-                    view_id=state["view_id"],
-                    view={
-                        "type": "modal",
-                        "callback_id": "streamlink_only_modal_view",
-                        "private_metadata": json.dumps({"channel_id": state["channel_id"]}),
-                        "title": {"type": "plain_text", "text": "오류"},
-                        "close": {"type": "plain_text", "text": "닫기"},
-                        "blocks": [
-                            {"type": "section", "text": {"type": "mrkdwn", "text": f":x: 중지 실패: {str(e)}"}},
-                        ],
-                    },
-                )
+                # Show error with dashboard
+                try:
+                    all_resources = services.tencent_client.list_all_resources()
+                    from app.services.linkage import ResourceHierarchyBuilder
+                    hierarchy = ResourceHierarchyBuilder.build_hierarchy(all_resources)
+                    modal_view = DashboardUI.create_streamlink_only_modal(
+                        hierarchy=hierarchy,
+                        status_filter=state["status_filter"],
+                        keyword=state["keyword"],
+                        channel_id=state["channel_id"],
+                        page=state["page"],
+                        loading_message=f"❌ 중지 실패: {str(e)[:50]}",
+                    )
+                    client.views_update(view_id=state["view_id"], view=modal_view)
+                except Exception:
+                    pass
 
         threading.Thread(target=async_stop_and_refresh, daemon=True).start()
 
