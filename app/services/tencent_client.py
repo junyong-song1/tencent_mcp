@@ -719,9 +719,8 @@ class TencentCloudClient:
 
             infos = log_resp.Infos
 
-            # Collect all relevant events from both pipelines
+            # Collect failover events from both pipelines
             failover_events = []
-            all_events = []
 
             for pipeline_attr in ['Pipeline0', 'Pipeline1']:
                 pipeline_logs = getattr(infos, pipeline_attr, None)
@@ -733,13 +732,7 @@ class TencentCloudClient:
                     log_type = getattr(log, 'Type', '')
                     log_time = getattr(log, 'Time', '')
 
-                    all_events.append({
-                        'type': log_type,
-                        'time': log_time,
-                        'pipeline': pipeline_attr,
-                    })
-
-                    # Collect failover-related events separately
+                    # Only collect failover-related events
                     # InputFailover = switched to backup, InputRecover = switched back to main
                     # PipelineFailover/PipelineRecover = similar pipeline-level events
                     if log_type in ['PipelineFailover', 'PipelineRecover', 'InputFailover', 'InputRecover']:
@@ -760,32 +753,19 @@ class TencentCloudClient:
 
             # Sort by time (most recent first)
             failover_events.sort(key=lambda x: x['time'], reverse=True)
-            all_events.sort(key=lambda x: x['time'], reverse=True)
 
             # Count failovers
             failover_count = sum(1 for e in failover_events if e['type'] in ['PipelineFailover', 'InputFailover'])
 
-            # Determine active pipeline from the most recent event
+            # Determine active pipeline from the most recent failover event
             last_failover = failover_events[0]
             last_failover_type = last_failover['type']
             last_failover_time = last_failover['time']
 
-            # Check if there's a StreamStart AFTER the last failover event
-            # If so, the channel might have been restarted and reset to main
-            stream_restarted_after_failover = False
-            for event in all_events:
-                if event['time'] > last_failover_time and event['type'] == 'StreamStart':
-                    stream_restarted_after_failover = True
-                    break
-
             # Logic:
-            # - If StreamStart after failover → main (channel restarted, reset to default)
             # - PipelineFailover/InputFailover (most recent) → backup is active
             # - PipelineRecover/InputRecover (most recent) → main is active
-            if stream_restarted_after_failover:
-                active_pipeline = "main"
-                message = f"스트림 재시작 후 main으로 복귀 (failover: {last_failover_time})"
-            elif last_failover_type in ['PipelineFailover', 'InputFailover']:
+            if last_failover_type in ['PipelineFailover', 'InputFailover']:
                 active_pipeline = "backup"
                 message = f"{last_failover_type} 발생 ({last_failover_time}) - backup으로 서비스 중"
             else:  # PipelineRecover or InputRecover
@@ -799,7 +779,6 @@ class TencentCloudClient:
                 "last_event_type": last_failover_type,
                 "last_event_time": last_failover_time,
                 "failover_count": failover_count,
-                "stream_restarted_after_failover": stream_restarted_after_failover,
                 "all_events": failover_events[:10],  # Keep last 10 events for reference
                 "message": message,
             }
