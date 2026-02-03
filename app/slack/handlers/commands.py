@@ -88,17 +88,19 @@ def register(app: App, services):
             respond("접근 권한이 없습니다.")
             return
 
-        # Block control commands (생성/수정/삭제)
-        if _contains_blocked_keywords(command_text):
+        cmd_parts = command_text.split()
+        sub_cmd = cmd_parts[0].lower() if cmd_parts else "list"
+
+        # Only block control-related sub-commands, not read-only commands like list, stats, trace
+        read_only_commands = {"list", "ls", "dashboard", "", "schedule", "일정", "스케줄",
+                             "stats", "통계", "stat", "trace", "chain", "추적", "help"}
+        if sub_cmd not in read_only_commands and _contains_blocked_keywords(command_text):
             respond(
                 ":no_entry_sign: *제어 명령어는 지원하지 않습니다*\n\n"
                 "생성, 수정, 삭제 등의 제어 작업은 대시보드의 버튼을 통해 수행해 주세요.\n"
                 "`/tencent` 명령어로 대시보드를 열어주세요."
             )
             return
-
-        cmd_parts = command_text.split()
-        sub_cmd = cmd_parts[0].lower() if cmd_parts else "list"
 
         if sub_cmd in ["list", "ls", "dashboard", ""]:
             try:
