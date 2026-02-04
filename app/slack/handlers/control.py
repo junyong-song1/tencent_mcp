@@ -307,21 +307,8 @@ def register(app: App, services):
                     linked_children = group["children"]
                     break
 
-        # Send initial message
-        if channel_id:
-            if is_integrated and linked_children:
-                child_names = ", ".join([c.get("name", c.get("id", ""))[:20] for c in linked_children[:3]])
-                if len(linked_children) > 3:
-                    child_names += f" 외 {len(linked_children) - 3}개"
-                client.chat_postMessage(
-                    channel=channel_id,
-                    text=f"<@{user_id}> requested *통합 {base_action.upper()}* on `{resource_name}` + {len(linked_children)} linked resources ({child_names})...",
-                )
-            else:
-                client.chat_postMessage(
-                    channel=channel_id,
-                    text=f"<@{user_id}> requested *{base_action.upper()}* on `{resource_name}` (`{resource_id}`)...",
-                )
+        # Map action to Korean
+        action_kr = {"start": "시작", "stop": "중지", "restart": "재시작"}.get(base_action, base_action)
 
         # Execute control on parent
         result = services.tencent_client.control_resource(resource_id, service_type, base_action)
@@ -329,7 +316,8 @@ def register(app: App, services):
         message = result.get("message", "Unknown error")
 
         result_icon = ":white_check_mark:" if success else ":x:"
-        results_summary = [f"{result_icon} `{resource_name}`: {message}"]
+        status_kr = f"{action_kr} 완료" if success else f"{action_kr} 실패"
+        results_summary = [f"{result_icon} {service_type} `{resource_name}`: {status_kr}"]
 
         # Execute on children if integrated
         if is_integrated and linked_children:
@@ -340,21 +328,21 @@ def register(app: App, services):
 
                 child_result = services.tencent_client.control_resource(child_id, child_service, base_action)
                 child_success = child_result.get("success", False)
-                child_msg = child_result.get("message", "Unknown")
                 child_icon = ":white_check_mark:" if child_success else ":x:"
-                results_summary.append(f"{child_icon} `{child_name}`: {child_msg}")
+                child_status = f"{action_kr} 완료" if child_success else f"{action_kr} 실패"
+                results_summary.append(f"  {child_icon} {child_service} `{child_name}`: {child_status}")
 
         # Send result message
         if channel_id:
             if is_integrated and linked_children:
                 client.chat_postMessage(
                     channel=channel_id,
-                    text=f"*통합 {base_action.upper()}* 결과:\n" + "\n".join(results_summary),
+                    text=f":white_check_mark: *통합 {action_kr}* 완료\n" + "\n".join(results_summary),
                 )
             else:
                 client.chat_postMessage(
                     channel=channel_id,
-                    text=f"{result_icon} *{base_action.upper()}* `{resource_name}`: {message}",
+                    text=f"{result_icon} {service_type} `{resource_name}` {status_kr}",
                 )
 
         async_update_modal(client, state, clear_cache=True)
@@ -422,22 +410,20 @@ def register(app: App, services):
         if not _check_streamlive_permission(user_id, service_type, client, channel_id):
             return
 
-        # Start/Stop action
-        if channel_id:
-            client.chat_postMessage(
-                channel=channel_id,
-                text=f"<@{user_id}> requested *{action_type.upper()}* on `{resource_name}`...",
-            )
+        # Map action to Korean
+        action_kr = {"start": "시작", "stop": "중지", "restart": "재시작"}.get(action_type, action_type)
 
+        # Execute control action
         result = services.tencent_client.control_resource(resource_id, service_type, action_type)
         success = result.get("success", False)
         message = result.get("message", "Unknown error")
 
         result_icon = ":white_check_mark:" if success else ":x:"
+        status_kr = f"{action_kr} 완료" if success else f"{action_kr} 실패: {message}"
         if channel_id:
             client.chat_postMessage(
                 channel=channel_id,
-                text=f"{result_icon} *{action_type.upper()}* `{resource_name}`: {message}",
+                text=f"{result_icon} {service_type} `{resource_name}` {status_kr}",
             )
 
         async_update_modal(client, state, clear_cache=True)
@@ -492,23 +478,16 @@ def register(app: App, services):
                 linked_children = group["children"]
                 break
 
-        # Send initial message
-        if channel_id:
-            child_names = ", ".join([c.get("name", c.get("id", ""))[:20] for c in linked_children[:3]])
-            if len(linked_children) > 3:
-                child_names += f" 외 {len(linked_children) - 3}개"
-            client.chat_postMessage(
-                channel=channel_id,
-                text=f"<@{user_id}> requested *통합 {action_type.upper()}* on `{resource_name}` + {len(linked_children)} linked resources ({child_names})...",
-            )
+        # Map action to Korean
+        action_kr = {"start": "시작", "stop": "중지"}.get(action_type, action_type)
 
         # Execute control on parent
         result = services.tencent_client.control_resource(resource_id, service_type, action_type)
         success = result.get("success", False)
-        message = result.get("message", "Unknown error")
 
         result_icon = ":white_check_mark:" if success else ":x:"
-        results_summary = [f"{result_icon} `{resource_name}`: {message}"]
+        status_kr = f"{action_kr} 완료" if success else f"{action_kr} 실패"
+        results_summary = [f"{result_icon} {service_type} `{resource_name}`: {status_kr}"]
 
         # Execute on children
         for child in linked_children:
@@ -518,15 +497,15 @@ def register(app: App, services):
 
             child_result = services.tencent_client.control_resource(child_id, child_service, action_type)
             child_success = child_result.get("success", False)
-            child_msg = child_result.get("message", "Unknown")
             child_icon = ":white_check_mark:" if child_success else ":x:"
-            results_summary.append(f"{child_icon} `{child_name}`: {child_msg}")
+            child_status = f"{action_kr} 완료" if child_success else f"{action_kr} 실패"
+            results_summary.append(f"  {child_icon} {child_service} `{child_name}`: {child_status}")
 
         # Send result message
         if channel_id:
             client.chat_postMessage(
                 channel=channel_id,
-                text=f"*통합 {action_type.upper()}* 결과:\n" + "\n".join(results_summary),
+                text=f":white_check_mark: *통합 {action_kr}* 완료\n" + "\n".join(results_summary),
             )
 
         async_update_modal(client, state, clear_cache=True)
@@ -590,22 +569,20 @@ def register(app: App, services):
             )
             return
 
-        # Start/Stop action
-        if channel_id:
-            client.chat_postMessage(
-                channel=channel_id,
-                text=f"<@{user_id}> requested *{action_type.upper()}* on `{resource_name}`...",
-            )
+        # Map action to Korean
+        action_kr = {"start": "시작", "stop": "중지", "restart": "재시작"}.get(action_type, action_type)
 
+        # Execute control action
         result = services.tencent_client.control_resource(resource_id, service_type, action_type)
         success = result.get("success", False)
         message = result.get("message", "Unknown error")
 
         result_icon = ":white_check_mark:" if success else ":x:"
+        status_kr = f"{action_kr} 완료" if success else f"{action_kr} 실패: {message}"
         if channel_id:
             client.chat_postMessage(
                 channel=channel_id,
-                text=f"{result_icon} *{action_type.upper()}* `{resource_name}`: {message}",
+                text=f"{result_icon} {service_type} `{resource_name}` {status_kr}",
             )
 
         async_update_modal(client, state, clear_cache=True)
@@ -654,21 +631,21 @@ def register(app: App, services):
         if service_type and not _check_streamlive_permission(user_id, service_type, client, channel_id):
             return
 
-        if channel_id:
-            client.chat_postMessage(
-                channel=channel_id,
-                text=f"<@{user_id}> requested *{action_type.upper()}* on `{resource_name}`...",
-            )
+        # Map action to Korean
+        action_kr = {"start": "시작", "stop": "중지", "restart": "재시작"}.get(action_type, action_type)
+        svc_type = service_type or "Resource"
 
+        # Execute control action
         result = services.tencent_client.control_resource(target_id, service_type or "", action_type)
         success = result.get("success", False)
         message = result.get("message", "Unknown error")
 
         result_icon = ":white_check_mark:" if success else ":x:"
+        status_kr = f"{action_kr} 완료" if success else f"{action_kr} 실패: {message}"
         if channel_id:
             client.chat_postMessage(
                 channel=channel_id,
-                text=f"{result_icon} *{action_type.upper()}* `{resource_name}`: {message}",
+                text=f"{result_icon} {svc_type} `{resource_name}` {status_kr}",
             )
 
         async_update_modal(client, state, clear_cache=True)

@@ -2737,6 +2737,218 @@ class TencentCloudClient:
                 "event_counts": {},
             }
 
+    # ========== INPUT_SWITCH Plan API Methods ==========
+
+    def switch_channel_input(
+        self, channel_id: str, input_id: str, event_name: str = None
+    ) -> Dict:
+        """Switch StreamLive channel input using Plan API (INPUT_SWITCH).
+
+        Args:
+            channel_id: StreamLive channel ID
+            input_id: Target input ID to switch to (InputAttachment name)
+            event_name: Optional event name (auto-generated if not provided)
+
+        Returns:
+            Dict with success status and message
+        """
+        try:
+            import time as time_module
+
+            client = self._get_mdl_client()
+
+            # Create Plan request
+            req = mdl_models.CreateStreamLivePlanRequest()
+            req.ChannelId = channel_id
+
+            # Build Plan object
+            plan = mdl_models.PlanReq()
+            plan.EventName = event_name or f"input_switch_{int(time_module.time())}"
+
+            # Timing settings - IMMEDIATE execution
+            timing = mdl_models.TimingSettingsReq()
+            timing.StartType = "IMMEDIATE"
+            plan.TimingSettings = timing
+
+            # Event settings - INPUT_SWITCH
+            event_settings = mdl_models.EventSettingsReq()
+            event_settings.EventType = "INPUT_SWITCH"
+            event_settings.InputAttachment = input_id
+            plan.EventSettings = event_settings
+
+            req.Plan = plan
+
+            # Execute the plan
+            client.CreateStreamLivePlan(req)
+
+            logger.info(f"Input switch executed: channel={channel_id}, target_input={input_id}")
+            return {
+                "success": True,
+                "message": f"입력이 {input_id}(으)로 전환되었습니다.",
+                "event_name": plan.EventName,
+            }
+
+        except TencentCloudSDKException as e:
+            logger.error(f"Failed to switch input: {e}")
+            return {"success": False, "message": str(e)}
+        except Exception as e:
+            logger.error(f"Failed to switch input: {e}")
+            return {"success": False, "message": str(e)}
+
+    def get_channel_plans(self, channel_id: str) -> List[Dict]:
+        """Get scheduled plans for a StreamLive channel.
+
+        Args:
+            channel_id: StreamLive channel ID
+
+        Returns:
+            List of plan dictionaries
+        """
+        try:
+            client = self._get_mdl_client()
+
+            req = mdl_models.DescribeStreamLivePlansRequest()
+            req.ChannelId = channel_id
+
+            resp = client.DescribeStreamLivePlans(req)
+
+            plans = []
+            if hasattr(resp, "Infos") and resp.Infos:
+                for plan_info in resp.Infos:
+                    plans.append({
+                        "event_name": getattr(plan_info, "EventName", ""),
+                        "event_type": getattr(plan_info, "EventType", ""),
+                        "start_type": getattr(plan_info, "StartType", ""),
+                        "start_time": getattr(plan_info, "StartTime", ""),
+                        "status": getattr(plan_info, "Status", ""),
+                    })
+
+            return plans
+
+        except TencentCloudSDKException as e:
+            logger.error(f"Failed to get channel plans: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Failed to get channel plans: {e}")
+            return []
+
+    def delete_channel_plan(self, channel_id: str, event_name: str) -> Dict:
+        """Delete a scheduled plan from a StreamLive channel.
+
+        Args:
+            channel_id: StreamLive channel ID
+            event_name: Event name of the plan to delete
+
+        Returns:
+            Dict with success status and message
+        """
+        try:
+            client = self._get_mdl_client()
+
+            req = mdl_models.DeleteStreamLivePlanRequest()
+            req.ChannelId = channel_id
+            req.EventName = event_name
+
+            client.DeleteStreamLivePlan(req)
+
+            logger.info(f"Plan deleted: channel={channel_id}, event={event_name}")
+            return {"success": True, "message": f"Plan {event_name} deleted"}
+
+        except TencentCloudSDKException as e:
+            logger.error(f"Failed to delete plan: {e}")
+            return {"success": False, "message": str(e)}
+        except Exception as e:
+            logger.error(f"Failed to delete plan: {e}")
+            return {"success": False, "message": str(e)}
+
+    def get_channel_failover_inputs(self, channel_id: str) -> Optional[Dict]:
+        """Get failover input information for a StreamLive channel.
+
+        Returns the primary and secondary input IDs configured in FailOverSettings.
+
+        Args:
+            channel_id: StreamLive channel ID
+
+        Returns:
+            Dict with primary_input_id, secondary_input_id, and input_details
+            or None if channel not found or no failover configured
+        """
+        try:
+            client = self._get_mdl_client()
+
+            # Get channel details
+            req = mdl_models.DescribeStreamLiveChannelRequest()
+            req.Id = channel_id
+            resp = client.DescribeStreamLiveChannel(req)
+
+            if not hasattr(resp, "Info"):
+                return None
+
+            info = resp.Info
+            attached_inputs = getattr(info, "AttachedInputs", [])
+
+            if not attached_inputs:
+                return None
+
+            # Fetch all inputs to get names
+            input_id_to_name = {}
+            try:
+                inp_req = mdl_models.DescribeStreamLiveInputsRequest()
+                inp_resp = client.DescribeStreamLiveInputs(inp_req)
+                all_inputs = inp_resp.Infos if hasattr(inp_resp, "Infos") else []
+                for inp in all_inputs:
+                    inp_id = getattr(inp, "Id", "")
+                    inp_name = getattr(inp, "Name", "")
+                    if inp_id:
+                        input_id_to_name[inp_id] = inp_name or inp_id
+            except Exception as e:
+                logger.debug(f"Could not fetch input names: {e}")
+
+            # Extract failover settings
+            primary_input_id = None
+            secondary_input_id = None
+            input_details = []
+
+            for att in attached_inputs:
+                att_id = str(getattr(att, "Id", att)).strip()
+                att_name = input_id_to_name.get(att_id, att_id)
+
+                # Check for failover settings
+                failover_settings = getattr(att, "FailOverSettings", None)
+                if failover_settings:
+                    secondary_id = getattr(failover_settings, "SecondaryInputId", "")
+                    if secondary_id:
+                        secondary_input_id = str(secondary_id).strip()
+
+                input_details.append({
+                    "id": att_id,
+                    "name": att_name,
+                })
+
+                if primary_input_id is None:
+                    primary_input_id = att_id
+
+            # Only return if failover is configured
+            if not secondary_input_id:
+                return None
+
+            return {
+                "channel_id": channel_id,
+                "channel_name": getattr(info, "Name", ""),
+                "primary_input_id": primary_input_id,
+                "primary_input_name": input_id_to_name.get(primary_input_id, primary_input_id),
+                "secondary_input_id": secondary_input_id,
+                "secondary_input_name": input_id_to_name.get(secondary_input_id, secondary_input_id),
+                "input_details": input_details,
+            }
+
+        except TencentCloudSDKException as e:
+            logger.error(f"Failed to get failover inputs: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get failover inputs: {e}")
+            return None
+
 
 class AsyncTencentClient:
     """Async wrapper for TencentCloudClient."""
@@ -2767,6 +2979,26 @@ class AsyncTencentClient:
 
     async def get_flow_statistics_batch(self, flow_ids: List[str]) -> Dict[str, Optional[Dict]]:
         return await asyncio.to_thread(self._sync.get_flow_statistics_batch, flow_ids)
+
+    async def switch_channel_input(
+        self, channel_id: str, input_id: str, event_name: str = None
+    ) -> Dict:
+        return await asyncio.to_thread(
+            self._sync.switch_channel_input, channel_id, input_id, event_name
+        )
+
+    async def get_channel_plans(self, channel_id: str) -> List[Dict]:
+        return await asyncio.to_thread(self._sync.get_channel_plans, channel_id)
+
+    async def delete_channel_plan(self, channel_id: str, event_name: str) -> Dict:
+        return await asyncio.to_thread(
+            self._sync.delete_channel_plan, channel_id, event_name
+        )
+
+    async def get_channel_failover_inputs(self, channel_id: str) -> Optional[Dict]:
+        return await asyncio.to_thread(
+            self._sync.get_channel_failover_inputs, channel_id
+        )
 
     def clear_cache(self) -> None:
         self._sync.clear_cache()

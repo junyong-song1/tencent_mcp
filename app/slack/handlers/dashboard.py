@@ -512,6 +512,12 @@ def register(app: App, services):
 
         service, resource_id = value.split(":", 1)
         state = extract_streamlink_modal_state(body["view"])
+        user_id = body["user"]["id"]
+
+        # Get Slack channel for notifications
+        from app.config import get_settings
+        settings = get_settings()
+        slack_channel = settings.NOTIFICATION_CHANNEL or user_id
 
         def async_start_and_refresh():
             try:
@@ -539,9 +545,27 @@ def register(app: App, services):
                 )
                 client.views_update(view_id=state["view_id"], view=loading_view)
 
-                # Start the flow
+                # Start the flow first
                 result = services.tencent_client.start_streamlink_input(resource_id)
                 logger.info(f"StreamLink flow started: {resource_id}, result: {result}")
+
+                success = result.get("success", False)
+                message = result.get("message", "")
+
+                # Send result message to Slack channel
+                try:
+                    if success:
+                        client.chat_postMessage(
+                            channel=slack_channel,
+                            text=f":white_check_mark: StreamLink `{flow_name}` 시작 완료",
+                        )
+                    else:
+                        client.chat_postMessage(
+                            channel=slack_channel,
+                            text=f":x: StreamLink `{flow_name}` 시작 실패: {message}",
+                        )
+                except Exception as e:
+                    logger.warning(f"Could not send result message: {e}")
 
                 # Poll for status to stabilize (bounded retries)
                 all_resources, _ = _poll_streamlink_status(resource_id, "running")
@@ -564,6 +588,14 @@ def register(app: App, services):
 
             except Exception as e:
                 logger.error(f"Failed to start StreamLink flow: {e}")
+                # Send error message to Slack channel
+                try:
+                    client.chat_postMessage(
+                        channel=slack_channel,
+                        text=f":x: StreamLink `{resource_id[:20]}` 시작 실패: {str(e)[:100]}",
+                    )
+                except Exception:
+                    pass
                 # Show error with dashboard
                 try:
                     all_resources = services.tencent_client.list_all_resources()
@@ -592,6 +624,12 @@ def register(app: App, services):
 
         service, resource_id = value.split(":", 1)
         state = extract_streamlink_modal_state(body["view"])
+        user_id = body["user"]["id"]
+
+        # Get Slack channel for notifications
+        from app.config import get_settings
+        settings = get_settings()
+        slack_channel = settings.NOTIFICATION_CHANNEL or user_id
 
         def async_stop_and_refresh():
             try:
@@ -619,15 +657,38 @@ def register(app: App, services):
                 )
                 client.views_update(view_id=state["view_id"], view=loading_view)
 
-                # Stop the flow
+                # Stop the flow first
                 result = services.tencent_client.stop_streamlink_input(resource_id)
                 logger.info(f"StreamLink flow stopped: {resource_id}, result: {result}")
 
+                success = result.get("success", False)
+                message = result.get("message", "")
+
                 # Poll for status to stabilize (bounded retries)
-                all_resources, _ = _poll_streamlink_status(resource_id, "stopped")
+                all_resources, last_status = _poll_streamlink_status(resource_id, "stopped")
                 if not all_resources:
                     all_resources = services.tencent_client.list_all_resources()
                 hierarchy = ResourceHierarchyBuilder.build_hierarchy(all_resources)
+
+                # Send result message to Slack channel after status check
+                try:
+                    if success and last_status == "stopped":
+                        client.chat_postMessage(
+                            channel=slack_channel,
+                            text=f":white_check_mark: StreamLink `{flow_name}` 중지 완료",
+                        )
+                    elif success:
+                        client.chat_postMessage(
+                            channel=slack_channel,
+                            text=f":hourglass_flowing_sand: StreamLink `{flow_name}` 중지 요청됨 (아직 반영 전)",
+                        )
+                    else:
+                        client.chat_postMessage(
+                            channel=slack_channel,
+                            text=f":x: StreamLink `{flow_name}` 중지 실패: {message}",
+                        )
+                except Exception as e:
+                    logger.warning(f"Could not send result message: {e}")
 
                 # Build failover map (to show failover status after action)
                 failover_map = _build_failover_map(services, hierarchy)
@@ -644,6 +705,14 @@ def register(app: App, services):
 
             except Exception as e:
                 logger.error(f"Failed to stop StreamLink flow: {e}")
+                # Send error message to Slack channel
+                try:
+                    client.chat_postMessage(
+                        channel=slack_channel,
+                        text=f":x: StreamLink `{resource_id[:20]}` 중지 실패: {str(e)[:100]}",
+                    )
+                except Exception:
+                    pass
                 # Show error with dashboard
                 try:
                     all_resources = services.tencent_client.list_all_resources()
@@ -667,3 +736,176 @@ def register(app: App, services):
     def handle_streamlink_info(ack, body, client, logger):
         """Handle info button for StreamLink flow (no-op for now)."""
         ack()
+
+    # ========== Input Switch Handlers ==========
+
+    @app.action(re.compile(r"^input_switch_modal_.*$"))
+    def handle_input_switch_modal(ack, body, client, logger):
+        """Handle input switch button click - open confirmation modal."""
+        ack()
+
+        try:
+            action = body["actions"][0]
+            value = action.get("value", "")  # "StreamLive:channel_id"
+
+            if ":" not in value:
+                logger.warning(f"Invalid input switch value: {value}")
+                return
+
+            service, channel_id = value.split(":", 1)
+            view_id = body["view"]["id"]
+
+            # Get failover inputs for this channel
+            failover_info = services.tencent_client.get_channel_failover_inputs(channel_id)
+
+            if not failover_info:
+                # No failover configured - show error
+                client.views_open(
+                    trigger_id=body["trigger_id"],
+                    view={
+                        "type": "modal",
+                        "title": {"type": "plain_text", "text": "입력 전환"},
+                        "close": {"type": "plain_text", "text": "닫기"},
+                        "blocks": [
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": "⚠️ 이 채널에는 Failover가 구성되어 있지 않습니다.\n\n"
+                                           "입력 전환을 사용하려면 채널에 Primary/Secondary 입력이 설정되어 있어야 합니다.",
+                                },
+                            }
+                        ],
+                    },
+                )
+                return
+
+            # Get current active input status
+            input_status = services.tencent_client.get_channel_input_status(channel_id)
+            active_input = "main"  # default
+            if input_status:
+                active_input = input_status.get("active_input", "main") or "main"
+
+            # Open input switch modal
+            modal = DashboardUI.create_input_switch_modal(
+                channel_id=channel_id,
+                channel_name=failover_info.get("channel_name", "Unknown"),
+                active_input=active_input,
+                primary_input_id=failover_info.get("primary_input_id", ""),
+                primary_input_name=failover_info.get("primary_input_name", "Primary"),
+                secondary_input_id=failover_info.get("secondary_input_id", ""),
+                secondary_input_name=failover_info.get("secondary_input_name", "Secondary"),
+                parent_view_id=view_id,
+            )
+
+            client.views_push(
+                trigger_id=body["trigger_id"],
+                view=modal,
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to open input switch modal: {e}", exc_info=True)
+
+    @app.action("input_switch_radio")
+    def handle_input_switch_radio(ack, body, client, logger):
+        """Handle radio button selection in input switch modal (no-op, just ack)."""
+        ack()
+
+    @app.view("input_switch_modal_submit")
+    def handle_input_switch_submit(ack, body, client, view, logger):
+        """Handle input switch modal submission - execute the switch."""
+        ack()
+
+        try:
+            from app.config import get_settings
+            settings = get_settings()
+
+            # Parse metadata
+            metadata = json.loads(view.get("private_metadata", "{}"))
+            channel_id = metadata.get("channel_id", "")  # StreamLive channel ID
+            channel_name = metadata.get("channel_name", "Unknown")
+
+            # Get selected input from view state
+            values = view.get("state", {}).get("values", {})
+            selection_block = values.get("input_switch_selection", {})
+            radio_action = selection_block.get("input_switch_radio", {})
+            selected_option = radio_action.get("selected_option", {})
+            target_input_id = selected_option.get("value", "")
+
+            if not target_input_id:
+                logger.error("No input selected for switch")
+                return
+
+            # Determine target input name for display
+            primary_input_id = metadata.get("primary_input_id", "")
+            secondary_input_id = metadata.get("secondary_input_id", "")
+
+            if target_input_id == primary_input_id:
+                target_name = "Main"
+            elif target_input_id == secondary_input_id:
+                target_name = "Backup"
+            else:
+                target_name = target_input_id[:20]
+
+            user_id = body["user"]["id"]
+
+            # Get Slack channel for notifications
+            slack_channel = settings.NOTIFICATION_CHANNEL or user_id
+
+            # Determine current input for display
+            if target_name == "Main":
+                switch_direction = "Backup → Main"
+            else:
+                switch_direction = "Main → Backup"
+
+            # Send "in progress" message to Slack channel
+            try:
+                client.chat_postMessage(
+                    channel=slack_channel,
+                    text=f"<@{user_id}> *입력 전환* 요청: `{channel_name}` ({switch_direction})",
+                )
+            except Exception as e:
+                logger.warning(f"Could not send progress message: {e}")
+                slack_channel = user_id  # Fallback to DM
+
+            # Execute input switch in background
+            def async_switch():
+                try:
+                    result = services.tencent_client.switch_channel_input(
+                        channel_id=channel_id,
+                        input_id=target_input_id,
+                    )
+
+                    success = result.get("success", False)
+                    message = result.get("message", "Unknown error")
+
+                    try:
+                        if success:
+                            client.chat_postMessage(
+                                channel=slack_channel,
+                                text=f":white_check_mark: `{channel_name}` 입력 전환 완료: {target_name}",
+                            )
+                        else:
+                            client.chat_postMessage(
+                                channel=slack_channel,
+                                text=f":x: `{channel_name}` 입력 전환 실패: {message}",
+                            )
+                    except Exception:
+                        pass
+
+                    logger.info(f"Input switch result: channel={channel_id}, target={target_input_id}, success={success}")
+
+                except Exception as e:
+                    logger.error(f"Input switch failed: {e}", exc_info=True)
+                    try:
+                        client.chat_postMessage(
+                            channel=slack_channel,
+                            text=f":x: `{channel_name}` 입력 전환 실패: {str(e)[:100]}",
+                        )
+                    except Exception:
+                        pass
+
+            threading.Thread(target=async_switch, daemon=True).start()
+
+        except Exception as e:
+            logger.error(f"Failed to process input switch submission: {e}", exc_info=True)

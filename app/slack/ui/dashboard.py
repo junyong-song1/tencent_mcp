@@ -690,12 +690,8 @@ class DashboardUI:
             else:
                 parent_text += f" | ⚪ {active_input}"
         else:
-            # Fallback: infer signal status from StreamLink flow status (no extra API call)
-            running_flows = [c for c in children if c.get("status") == "running"]
-            if running_flows:
-                parent_text += " | 📶 신호 수신중"
-            elif children:
-                parent_text += " | ⚫ 무신호"
+            # Fallback signal status hidden for now (TODO: revisit later)
+            pass
 
         parent_text += f"\nID: `{parent_id[:20]}...` | 상태: {parent_status}"
 
@@ -713,10 +709,27 @@ class DashboardUI:
                 except Exception:
                     parent_text += f" | 전환: {last_time}"
 
-        blocks.append({
+        # Check if channel has failover configured for input switch button
+        has_failover = bool(active_input)
+        input_attachments = parent.get("input_attachments", [])
+        has_multiple_inputs = len(input_attachments) >= 2
+
+        # Build section block with optional accessory button
+        section_block = {
             "type": "section",
             "text": {"type": "mrkdwn", "text": parent_text},
-        })
+        }
+
+        # Add input switch button as accessory if failover configured
+        if (has_failover or has_multiple_inputs) and parent_status == "running":
+            section_block["accessory"] = {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "🔄 전환", "emoji": True},
+                "action_id": f"input_switch_modal_{parent_id}",
+                "value": f"StreamLive:{parent_id}",
+            }
+
+        blocks.append(section_block)
 
         # Children (StreamLink flows)
         if children:
@@ -949,3 +962,104 @@ class DashboardUI:
             elements.append(create_button("다음 ▶", "streamlink_only_page_next"))
 
         return create_actions_block(elements)
+
+    # ========== Input Switch Modal ==========
+
+    @classmethod
+    def create_input_switch_modal(
+        cls,
+        channel_id: str,
+        channel_name: str,
+        active_input: str,
+        primary_input_id: str,
+        primary_input_name: str,
+        secondary_input_id: str,
+        secondary_input_name: str,
+        parent_view_id: str = "",
+    ) -> dict:
+        """Create input switch confirmation modal.
+
+        Args:
+            channel_id: StreamLive channel ID
+            channel_name: Channel name for display
+            active_input: Current active input ("main" or "backup")
+            primary_input_id: Primary input ID
+            primary_input_name: Primary input name
+            secondary_input_id: Secondary input ID
+            secondary_input_name: Secondary input name
+            parent_view_id: Parent view ID to return to after action
+
+        Returns:
+            Slack modal view dict
+        """
+        # Determine current label
+        if active_input == "main":
+            current_label = "Main"
+        elif active_input == "backup":
+            current_label = "Backup"
+        else:
+            current_label = active_input or "Unknown"
+
+        # Build radio options
+        options = [
+            {
+                "text": {"type": "plain_text", "text": f"Main: {primary_input_name}"},
+                "value": primary_input_id,
+            },
+            {
+                "text": {"type": "plain_text", "text": f"Backup: {secondary_input_name}"},
+                "value": secondary_input_id,
+            },
+        ]
+
+        # Set initial option to the target (opposite of current)
+        initial_option = options[1] if active_input == "main" else options[0]
+
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*채널:* {channel_name}\n*현재 입력:* 🟢 {current_label}",
+                },
+            },
+            {"type": "divider"},
+            {
+                "type": "input",
+                "block_id": "input_switch_selection",
+                "label": {"type": "plain_text", "text": "전환할 입력 선택"},
+                "element": {
+                    "type": "radio_buttons",
+                    "action_id": "input_switch_radio",
+                    "options": options,
+                    "initial_option": initial_option,
+                },
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "⚠️ 입력 전환 시 일시적인 끊김이 발생할 수 있습니다.",
+                    }
+                ],
+            },
+        ]
+
+        metadata = json.dumps({
+            "channel_id": channel_id,
+            "channel_name": channel_name,
+            "primary_input_id": primary_input_id,
+            "secondary_input_id": secondary_input_id,
+            "parent_view_id": parent_view_id,
+        })
+
+        return {
+            "type": "modal",
+            "callback_id": "input_switch_modal_submit",
+            "private_metadata": metadata,
+            "title": {"type": "plain_text", "text": "입력 전환"},
+            "submit": {"type": "plain_text", "text": "전환 실행"},
+            "close": {"type": "plain_text", "text": "취소"},
+            "blocks": blocks,
+        }
