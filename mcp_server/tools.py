@@ -3,6 +3,7 @@
 Tools provide executable functions for controlling resources.
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -14,6 +15,32 @@ from mcp.types import Tool, TextContent
 from app.services.alert_utils import get_channel_alerts, CRITICAL_ALERTS, WARNING_ALERTS
 
 logger = logging.getLogger(__name__)
+
+
+async def _call_in_thread(func, *args, **kwargs):
+    """Run sync functions in a worker thread to avoid blocking."""
+    return await asyncio.to_thread(func, *args, **kwargs)
+
+
+def _error_response(message: str) -> Dict[str, Any]:
+    return {"success": False, "error": message}
+
+
+class ToolContext:
+    """Request-scoped helpers for tool execution."""
+
+    def __init__(self, client, schedule_manager):
+        self.client = client
+        self.schedule_manager = schedule_manager
+        self._resources_cache = None
+
+    async def call(self, func, *args, **kwargs):
+        return await _call_in_thread(func, *args, **kwargs)
+
+    async def get_all_resources(self):
+        if self._resources_cache is None:
+            self._resources_cache = await self.call(self.client.list_all_resources)
+        return self._resources_cache
 
 
 def _analyze_single_alert(
@@ -721,831 +748,779 @@ async def _execute_tool(
     schedule_manager,
 ) -> Dict[str, Any]:
     """Execute a tool and return the result."""
-    
-    # List channels
-    if name == "list_channels":
-        service_filter = arguments.get("service", "all")
-        status_filter = arguments.get("status", "all")
-        
-        resources = client.list_all_resources()
-        
-        # Apply filters
-        if service_filter != "all":
-            resources = [r for r in resources if r.get("service") == service_filter]
-        
-        if status_filter != "all":
-            resources = [r for r in resources if r.get("status") == status_filter]
-        
-        # Group by service
-        streamlive = [r for r in resources if r.get("service") == "StreamLive"]
-        streamlink = [r for r in resources if r.get("service") == "StreamLink"]
-        
-        return {
-            "success": True,
-            "total_count": len(resources),
-            "streamlive_count": len(streamlive),
-            "streamlink_count": len(streamlink),
-            "streamlive_channels": streamlive,
-            "streamlink_flows": streamlink,
-        }
-    
-    # Search resources
-    elif name == "search_resources":
-        keyword = arguments.get("keyword", "")
-        results = client.search_resources([keyword])
-        return {
-            "success": True,
-            "keyword": keyword,
-            "count": len(results),
-            "results": results,
-        }
-    
-    # Get channel status
-    elif name == "get_channel_status":
-        channel_id = arguments["channel_id"]
-        service = arguments["service"]
-        
-        details = client.get_resource_details(channel_id, service)
-        if not details:
-            return {
-                "success": False,
-                "error": f"Channel not found: {channel_id}",
-            }
-        
-        return {
-            "success": True,
-            "channel": details,
-        }
-    
-    # Get input status (main/backup)
-    elif name == "get_input_status":
-        channel_id = arguments["channel_id"]
-        input_status = client.get_channel_input_status(channel_id)
-        
-        if not input_status:
-            return {
-                "success": False,
-                "error": f"Could not get input status for channel: {channel_id}",
-            }
-        
-        return {
-            "success": True,
-            **input_status,
-        }
-    
-    # Start channel
-    elif name == "start_channel":
-        channel_id = arguments["channel_id"]
-        service = arguments["service"]
-        
-        result = client.control_resource(channel_id, service, "start")
-        return {
-            "success": result.get("success", False),
-            "channel_id": channel_id,
-            "service": service,
-            "action": "start",
-            "message": result.get("message", ""),
-        }
-    
-    # Stop channel
-    elif name == "stop_channel":
-        channel_id = arguments["channel_id"]
-        service = arguments["service"]
-        
-        result = client.control_resource(channel_id, service, "stop")
-        return {
-            "success": result.get("success", False),
-            "channel_id": channel_id,
-            "service": service,
-            "action": "stop",
-            "message": result.get("message", ""),
-        }
-    
-    # Restart channel
-    elif name == "restart_channel":
-        channel_id = arguments["channel_id"]
-        service = arguments["service"]
-        
-        result = client.control_resource(channel_id, service, "restart")
-        return {
-            "success": result.get("success", False),
-            "channel_id": channel_id,
-            "service": service,
-            "action": "restart",
-            "message": result.get("message", ""),
-        }
-    
-    # List schedules
-    elif name == "list_schedules":
-        from datetime import date, timedelta
-        
-        date_str = arguments.get("date")
-        days = arguments.get("days", 7)
-        
-        if date_str:
-            start_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-        else:
-            start_date = date.today()
-        
-        end_date = start_date + timedelta(days=days)
-        schedules = schedule_manager.get_schedules_for_range(start_date, end_date)
-        
-        return {
-            "success": True,
-            "start_date": start_date.isoformat(),
-            "end_date": end_date.isoformat(),
-            "count": len(schedules),
-            "schedules": schedules,
-        }
-    
-    # Create schedule
-    elif name == "create_schedule":
-        start_time = datetime.fromisoformat(arguments["start_time"])
-        end_time = datetime.fromisoformat(arguments["end_time"])
-        
-        result = schedule_manager.add_schedule(
-            channel_id=arguments["channel_id"],
-            channel_name=arguments["channel_name"],
-            service=arguments["service"],
-            title=arguments["title"],
-            start_time=start_time,
-            end_time=end_time,
-            assignee_id="mcp_user",
-            assignee_name=arguments["assignee_name"],
-            auto_start=arguments.get("auto_start", False),
-            auto_stop=arguments.get("auto_stop", False),
-            notes=arguments.get("notes", ""),
-            created_by="MCP",
-        )
-        
-        return result
-    
-    # Delete schedule
-    elif name == "delete_schedule":
-        schedule_id = arguments["schedule_id"]
-        result = schedule_manager.delete_schedule(schedule_id)
-        return result
-    
-    # Get linked resources
-    elif name == "get_linked_resources":
-        from app.services.linkage import ResourceHierarchyBuilder
+    ctx = ToolContext(client, schedule_manager)
+    handlers = {
+        "list_channels": _handle_list_channels,
+        "search_resources": _handle_search_resources,
+        "get_channel_status": _handle_get_channel_status,
+        "get_input_status": _handle_get_input_status,
+        "start_channel": _handle_start_channel,
+        "stop_channel": _handle_stop_channel,
+        "restart_channel": _handle_restart_channel,
+        "list_schedules": _handle_list_schedules,
+        "create_schedule": _handle_create_schedule,
+        "delete_schedule": _handle_delete_schedule,
+        "get_linked_resources": _handle_get_linked_resources,
+        "start_integrated": _handle_start_integrated,
+        "stop_integrated": _handle_stop_integrated,
+        "list_streampackage_channels": _handle_list_streampackage_channels,
+        "get_streampackage_status": _handle_get_streampackage_status,
+        "list_css_domains": _handle_list_css_domains,
+        "list_css_streams": _handle_list_css_streams,
+        "get_css_stream_status": _handle_get_css_stream_status,
+        "get_css_stream_bandwidth": _handle_get_css_stream_bandwidth,
+        "get_css_stream_quality": _handle_get_css_stream_quality,
+        "get_css_stream_events": _handle_get_css_stream_events,
+        "get_alerts": _handle_get_alerts,
+        "analyze_alert": _handle_analyze_alert,
+        "get_health_summary": _handle_get_health_summary,
+        "get_full_status": _handle_get_full_status,
+        "get_channel_logs": _handle_get_channel_logs,
+        "get_integrated_logs": _handle_get_integrated_logs,
+        "analyze_logs": _handle_analyze_logs,
+    }
+    handler = handlers.get(name)
+    if not handler:
+        return _error_response(f"Unknown tool: {name}")
+    return await handler(ctx, arguments)
 
-        channel_id = arguments["channel_id"]
-        service = arguments["service"]
 
-        resources = client.list_all_resources()
+async def _handle_list_channels(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    service_filter = arguments.get("service", "all")
+    status_filter = arguments.get("status", "all")
 
-        # Find the resource
-        target_resource = None
-        for r in resources:
-            if r.get("id") == channel_id and r.get("service") == service:
-                target_resource = r
+    resources = await ctx.get_all_resources()
+
+    if service_filter != "all":
+        resources = [r for r in resources if r.get("service") == service_filter]
+
+    if status_filter != "all":
+        resources = [r for r in resources if r.get("status") == status_filter]
+
+    streamlive = [r for r in resources if r.get("service") == "StreamLive"]
+    streamlink = [r for r in resources if r.get("service") == "StreamLink"]
+
+    return {
+        "success": True,
+        "total_count": len(resources),
+        "streamlive_count": len(streamlive),
+        "streamlink_count": len(streamlink),
+        "streamlive_channels": streamlive,
+        "streamlink_flows": streamlink,
+    }
+
+
+async def _handle_search_resources(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    keyword = arguments.get("keyword", "")
+    results = await ctx.call(ctx.client.search_resources, [keyword])
+    return {
+        "success": True,
+        "keyword": keyword,
+        "count": len(results),
+        "results": results,
+    }
+
+
+async def _handle_get_channel_status(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    channel_id = arguments["channel_id"]
+    service = arguments["service"]
+
+    details = await ctx.call(ctx.client.get_resource_details, channel_id, service)
+    if not details:
+        return _error_response(f"Channel not found: {channel_id}")
+
+    return {
+        "success": True,
+        "channel": details,
+    }
+
+
+async def _handle_get_input_status(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    channel_id = arguments["channel_id"]
+    input_status = await ctx.call(ctx.client.get_channel_input_status, channel_id)
+
+    if not input_status:
+        return _error_response(f"Could not get input status for channel: {channel_id}")
+
+    return {
+        "success": True,
+        **input_status,
+    }
+
+
+async def _handle_start_channel(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    channel_id = arguments["channel_id"]
+    service = arguments["service"]
+
+    result = await ctx.call(ctx.client.control_resource, channel_id, service, "start")
+    return {
+        "success": result.get("success", False),
+        "channel_id": channel_id,
+        "service": service,
+        "action": "start",
+        "message": result.get("message", ""),
+    }
+
+
+async def _handle_stop_channel(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    channel_id = arguments["channel_id"]
+    service = arguments["service"]
+
+    result = await ctx.call(ctx.client.control_resource, channel_id, service, "stop")
+    return {
+        "success": result.get("success", False),
+        "channel_id": channel_id,
+        "service": service,
+        "action": "stop",
+        "message": result.get("message", ""),
+    }
+
+
+async def _handle_restart_channel(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    channel_id = arguments["channel_id"]
+    service = arguments["service"]
+
+    result = await ctx.call(ctx.client.control_resource, channel_id, service, "restart")
+    return {
+        "success": result.get("success", False),
+        "channel_id": channel_id,
+        "service": service,
+        "action": "restart",
+        "message": result.get("message", ""),
+    }
+
+
+async def _handle_list_schedules(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    from datetime import date, timedelta
+
+    date_str = arguments.get("date")
+    days = arguments.get("days", 7)
+
+    if date_str:
+        start_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    else:
+        start_date = date.today()
+
+    end_date = start_date + timedelta(days=days)
+    schedules = await ctx.call(
+        ctx.schedule_manager.get_schedules_for_range, start_date, end_date
+    )
+
+    return {
+        "success": True,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "count": len(schedules),
+        "schedules": schedules,
+    }
+
+
+async def _handle_create_schedule(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    start_time = datetime.fromisoformat(arguments["start_time"])
+    end_time = datetime.fromisoformat(arguments["end_time"])
+
+    return await ctx.call(
+        ctx.schedule_manager.add_schedule,
+        channel_id=arguments["channel_id"],
+        channel_name=arguments["channel_name"],
+        service=arguments["service"],
+        title=arguments["title"],
+        start_time=start_time,
+        end_time=end_time,
+        assignee_id="mcp_user",
+        assignee_name=arguments["assignee_name"],
+        auto_start=arguments.get("auto_start", False),
+        auto_stop=arguments.get("auto_stop", False),
+        notes=arguments.get("notes", ""),
+        created_by="MCP",
+    )
+
+
+async def _handle_delete_schedule(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    schedule_id = arguments["schedule_id"]
+    return await ctx.call(ctx.schedule_manager.delete_schedule, schedule_id)
+
+
+async def _handle_get_linked_resources(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services.linkage import ResourceHierarchyBuilder
+
+    channel_id = arguments["channel_id"]
+    service = arguments["service"]
+
+    resources = await ctx.get_all_resources()
+
+    target_resource = None
+    for resource in resources:
+        if resource.get("id") == channel_id and resource.get("service") == service:
+            target_resource = resource
+            break
+
+    if not target_resource:
+        return _error_response(f"Resource not found: {channel_id}")
+
+    hierarchy = ResourceHierarchyBuilder.build_hierarchy(resources)
+    linked = []
+
+    if service == "StreamLive":
+        for h in hierarchy:
+            if h["parent"].get("id") == channel_id:
+                linked = h["children"]
                 break
-
-        if not target_resource:
-            return {
-                "success": False,
-                "error": f"Resource not found: {channel_id}",
-            }
-
-        # Build hierarchy and find linked resources
-        hierarchy = ResourceHierarchyBuilder.build_hierarchy(resources)
-        linked = []
-
-        if service == "StreamLive":
-            # Find children (StreamLink flows)
-            for h in hierarchy:
-                if h["parent"].get("id") == channel_id:
-                    linked = h["children"]
+    else:
+        for h in hierarchy:
+            for child in h["children"]:
+                if child.get("id") == channel_id:
+                    linked = [h["parent"]]
                     break
-        else:
-            # Find parent (StreamLive channel)
-            for h in hierarchy:
-                for child in h["children"]:
-                    if child.get("id") == channel_id:
-                        linked = [h["parent"]]
-                        break
-        
-        return {
-            "success": True,
-            "source": target_resource,
-            "linked_resources": linked,
-            "linked_count": len(linked),
-        }
-    
-    # Start integrated
-    elif name == "start_integrated":
-        channel_id = arguments["channel_id"]
 
-        # First, get linked resources
-        from app.services.linkage import ResourceHierarchyBuilder
+    return {
+        "success": True,
+        "source": target_resource,
+        "linked_resources": linked,
+        "linked_count": len(linked),
+    }
 
-        resources = client.list_all_resources()
-        hierarchy = ResourceHierarchyBuilder.build_hierarchy(resources)
 
-        # Find the channel and its children
-        target_hierarchy = None
-        for h in hierarchy:
-            if h["parent"].get("id") == channel_id:
-                target_hierarchy = h
-                break
+async def _handle_start_integrated(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services.linkage import ResourceHierarchyBuilder
 
-        if not target_hierarchy:
-            return {
-                "success": False,
-                "error": f"StreamLive channel not found: {channel_id}",
-            }
+    channel_id = arguments["channel_id"]
+    resources = await ctx.get_all_resources()
+    hierarchy = ResourceHierarchyBuilder.build_hierarchy(resources)
 
-        results = []
+    target_hierarchy = None
+    for h in hierarchy:
+        if h["parent"].get("id") == channel_id:
+            target_hierarchy = h
+            break
 
-        # Start children first (StreamLink flows)
-        for child in target_hierarchy["children"]:
-            result = client.control_resource(child["id"], "StreamLink", "start")
-            results.append({
-                "id": child["id"],
-                "name": child.get("name", ""),
-                "service": "StreamLink",
-                **result,
-            })
+    if not target_hierarchy:
+        return _error_response(f"StreamLive channel not found: {channel_id}")
 
-        # Then start parent (StreamLive channel)
-        parent_result = client.control_resource(channel_id, "StreamLive", "start")
+    results = []
+    for child in target_hierarchy["children"]:
+        result = await ctx.call(ctx.client.control_resource, child["id"], "StreamLink", "start")
         results.append({
-            "id": channel_id,
-            "name": target_hierarchy["parent"].get("name", ""),
-            "service": "StreamLive",
-            **parent_result,
+            "id": child["id"],
+            "name": child.get("name", ""),
+            "service": "StreamLink",
+            **result,
         })
 
-        all_success = all(r.get("success", False) for r in results)
+    parent_result = await ctx.call(ctx.client.control_resource, channel_id, "StreamLive", "start")
+    results.append({
+        "id": channel_id,
+        "name": target_hierarchy["parent"].get("name", ""),
+        "service": "StreamLive",
+        **parent_result,
+    })
 
-        return {
-            "success": all_success,
-            "action": "start_integrated",
-            "results": results,
-        }
-    
-    # Stop integrated
-    elif name == "stop_integrated":
-        channel_id = arguments["channel_id"]
+    all_success = all(r.get("success", False) for r in results)
+    return {
+        "success": all_success,
+        "action": "start_integrated",
+        "results": results,
+    }
 
-        from app.services.linkage import ResourceHierarchyBuilder
 
-        resources = client.list_all_resources()
-        hierarchy = ResourceHierarchyBuilder.build_hierarchy(resources)
+async def _handle_stop_integrated(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services.linkage import ResourceHierarchyBuilder
 
-        # Find the channel and its children
-        target_hierarchy = None
-        for h in hierarchy:
-            if h["parent"].get("id") == channel_id:
-                target_hierarchy = h
-                break
+    channel_id = arguments["channel_id"]
+    resources = await ctx.get_all_resources()
+    hierarchy = ResourceHierarchyBuilder.build_hierarchy(resources)
 
-        if not target_hierarchy:
-            return {
-                "success": False,
-                "error": f"StreamLive channel not found: {channel_id}",
-            }
+    target_hierarchy = None
+    for h in hierarchy:
+        if h["parent"].get("id") == channel_id:
+            target_hierarchy = h
+            break
 
-        results = []
+    if not target_hierarchy:
+        return _error_response(f"StreamLive channel not found: {channel_id}")
 
-        # Stop parent first (StreamLive channel)
-        parent_result = client.control_resource(channel_id, "StreamLive", "stop")
+    results = []
+    parent_result = await ctx.call(ctx.client.control_resource, channel_id, "StreamLive", "stop")
+    results.append({
+        "id": channel_id,
+        "name": target_hierarchy["parent"].get("name", ""),
+        "service": "StreamLive",
+        **parent_result,
+    })
+
+    for child in target_hierarchy["children"]:
+        result = await ctx.call(ctx.client.control_resource, child["id"], "StreamLink", "stop")
         results.append({
-            "id": channel_id,
-            "name": target_hierarchy["parent"].get("name", ""),
-            "service": "StreamLive",
-            **parent_result,
+            "id": child["id"],
+            "name": child.get("name", ""),
+            "service": "StreamLink",
+            **result,
         })
 
-        # Then stop children (StreamLink flows)
-        for child in target_hierarchy["children"]:
-            result = client.control_resource(child["id"], "StreamLink", "stop")
-            results.append({
-                "id": child["id"],
-                "name": child.get("name", ""),
-                "service": "StreamLink",
-                **result,
-            })
+    all_success = all(r.get("success", False) for r in results)
+    return {
+        "success": all_success,
+        "action": "stop_integrated",
+        "results": results,
+    }
 
-        all_success = all(r.get("success", False) for r in results)
 
-        return {
-            "success": all_success,
-            "action": "stop_integrated",
-            "results": results,
-        }
-    
-    # List StreamPackage channels
-    elif name == "list_streampackage_channels":
-        channels = client.list_streampackage_channels()
-        return {
-            "success": True,
-            "count": len(channels),
-            "channels": channels,
-        }
-    
-    # Get StreamPackage status
-    elif name == "get_streampackage_status":
-        channel_id = arguments["channel_id"]
-        details = client.get_streampackage_channel_details(channel_id)
-        
-        if not details:
-            return {
-                "success": False,
-                "error": f"StreamPackage channel not found: {channel_id}",
-            }
-        
-        return {
-            "success": True,
-            **details,
-        }
-    
-    # List CSS domains
-    elif name == "list_css_domains":
-        domains = client.list_css_domains()
-        return {
-            "success": True,
-            "count": len(domains),
-            "domains": domains,
-        }
-    
-    # List CSS streams
-    elif name == "list_css_streams":
-        domain = arguments.get("domain")
-        streams = client.list_css_streams(domain)
-        return {
-            "success": True,
-            "domain": domain or "all",
-            "count": len(streams),
-            "streams": streams,
-        }
-    
-    # Get CSS stream status
-    elif name == "get_css_stream_status":
-        stream_name = arguments["stream_name"]
-        domain = arguments.get("domain")
-        
-        details = client.get_css_stream_details(stream_name, domain)
-        
-        if not details:
-            return {
-                "success": False,
-                "error": f"CSS stream not found: {stream_name}",
-            }
-        
-        return {
-            "success": True,
-            **details,
-        }
-    
-    # Get CSS stream bandwidth
-    elif name == "get_css_stream_bandwidth":
-        stream_name = arguments["stream_name"]
-        domain = arguments.get("domain")
-        start_time = arguments.get("start_time")
-        end_time = arguments.get("end_time")
-        
-        bandwidth_info = client.get_css_stream_bandwidth(
-            stream_name=stream_name,
-            domain=domain,
-            start_time=start_time,
-            end_time=end_time,
-        )
-        
-        if not bandwidth_info:
-            return {
-                "success": False,
-                "error": f"Could not get bandwidth info for: {stream_name}",
-            }
-        
-        return {
-            "success": True,
-            **bandwidth_info,
-        }
-    
-    # Get CSS stream quality
-    elif name == "get_css_stream_quality":
-        stream_name = arguments["stream_name"]
-        domain = arguments.get("domain")
-        
-        quality_info = client.get_css_stream_quality(stream_name, domain)
-        
-        if not quality_info:
-            return {
-                "success": False,
-                "error": f"Could not get quality info for: {stream_name}",
-            }
-        
-        return {
-            "success": True,
-            **quality_info,
-        }
-    
-    # Get CSS stream events
-    elif name == "get_css_stream_events":
-        stream_name = arguments["stream_name"]
-        domain = arguments.get("domain")
-        hours = arguments.get("hours", 24)
-        
-        events = client.get_css_stream_events(
-            stream_name=stream_name,
-            domain=domain,
-            hours=hours,
-        )
-        
-        return {
-            "success": True,
-            "stream_name": stream_name,
-            "domain": domain,
-            "hours": hours,
-            "total_events": len(events),
-            "events": events,
-        }
-    
-    # Get alerts
-    elif name == "get_alerts":
-        channel_id_filter = arguments.get("channel_id")
-        severity_filter = arguments.get("severity", "all")
+async def _handle_list_streampackage_channels(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    channels = await ctx.call(ctx.client.list_streampackage_channels)
+    return {
+        "success": True,
+        "count": len(channels),
+        "channels": channels,
+    }
 
-        resources = client.list_all_resources()
+
+async def _handle_get_streampackage_status(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    channel_id = arguments["channel_id"]
+    details = await ctx.call(ctx.client.get_streampackage_channel_details, channel_id)
+
+    if not details:
+        return _error_response(f"StreamPackage channel not found: {channel_id}")
+
+    return {
+        "success": True,
+        **details,
+    }
+
+
+async def _handle_list_css_domains(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    domains = await ctx.call(ctx.client.list_css_domains)
+    return {
+        "success": True,
+        "count": len(domains),
+        "domains": domains,
+    }
+
+
+async def _handle_list_css_streams(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    domain = arguments.get("domain")
+    streams = await ctx.call(ctx.client.list_css_streams, domain)
+    return {
+        "success": True,
+        "domain": domain or "all",
+        "count": len(streams),
+        "streams": streams,
+    }
+
+
+async def _handle_get_css_stream_status(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    stream_name = arguments["stream_name"]
+    domain = arguments.get("domain")
+    details = await ctx.call(ctx.client.get_css_stream_details, stream_name, domain)
+
+    if not details:
+        return _error_response(f"CSS stream not found: {stream_name}")
+
+    return {
+        "success": True,
+        **details,
+    }
+
+
+async def _handle_get_css_stream_bandwidth(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    stream_name = arguments["stream_name"]
+    domain = arguments.get("domain")
+    start_time = arguments.get("start_time")
+    end_time = arguments.get("end_time")
+
+    bandwidth_info = await ctx.call(
+        ctx.client.get_css_stream_bandwidth,
+        stream_name=stream_name,
+        domain=domain,
+        start_time=start_time,
+        end_time=end_time,
+    )
+
+    if not bandwidth_info:
+        return _error_response(f"Could not get bandwidth info for: {stream_name}")
+
+    return {
+        "success": True,
+        **bandwidth_info,
+    }
+
+
+async def _handle_get_css_stream_quality(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    stream_name = arguments["stream_name"]
+    domain = arguments.get("domain")
+
+    quality_info = await ctx.call(ctx.client.get_css_stream_quality, stream_name, domain)
+    if not quality_info:
+        return _error_response(f"Could not get quality info for: {stream_name}")
+
+    return {
+        "success": True,
+        **quality_info,
+    }
+
+
+async def _handle_get_css_stream_events(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    stream_name = arguments["stream_name"]
+    domain = arguments.get("domain")
+    hours = arguments.get("hours", 24)
+
+    events = await ctx.call(
+        ctx.client.get_css_stream_events,
+        stream_name=stream_name,
+        domain=domain,
+        hours=hours,
+    )
+
+    return {
+        "success": True,
+        "stream_name": stream_name,
+        "domain": domain,
+        "hours": hours,
+        "total_events": len(events),
+        "events": events,
+    }
+
+
+async def _handle_get_alerts(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    channel_id_filter = arguments.get("channel_id")
+    severity_filter = arguments.get("severity", "all")
+
+    resources = await ctx.get_all_resources()
+    running_channels = [
+        r for r in resources
+        if r.get("service") == "StreamLive" and r.get("status") == "running"
+    ]
+
+    if channel_id_filter:
         running_channels = [
-            r for r in resources
-            if r.get("service") == "StreamLive" and r.get("status") == "running"
+            r for r in running_channels
+            if r.get("id") == channel_id_filter
         ]
 
-        # If specific channel requested, filter to that channel
-        if channel_id_filter:
-            running_channels = [
-                r for r in running_channels
-                if r.get("id") == channel_id_filter
-            ]
+    all_alerts = []
+    for channel in running_channels:
+        ch_id = channel.get("id", "")
+        ch_name = channel.get("name", "")
+        try:
+            alerts = await ctx.call(get_channel_alerts, ctx.client, ch_id, ch_name)
+            all_alerts.extend(alerts)
+        except Exception as e:
+            logger.error(f"Failed to get alerts for channel {ch_id}: {e}")
 
-        all_alerts = []
-        for channel in running_channels:
-            ch_id = channel.get("id", "")
-            ch_name = channel.get("name", "")
-            try:
-                alerts = get_channel_alerts(client, ch_id, ch_name)
-                all_alerts.extend(alerts)
-            except Exception as e:
-                logger.error(f"Failed to get alerts for channel {ch_id}: {e}")
+    if severity_filter != "all":
+        all_alerts = [a for a in all_alerts if a.get("severity") == severity_filter]
 
-        # Filter by severity if requested
-        if severity_filter != "all":
-            all_alerts = [a for a in all_alerts if a.get("severity") == severity_filter]
+    critical_alerts = [a for a in all_alerts if a.get("severity") == "critical"]
+    warning_alerts = [a for a in all_alerts if a.get("severity") == "warning"]
 
-        # Categorize alerts
-        critical_alerts = [a for a in all_alerts if a.get("severity") == "critical"]
-        warning_alerts = [a for a in all_alerts if a.get("severity") == "warning"]
-        info_alerts = [a for a in all_alerts if a.get("severity") == "info"]
+    return {
+        "success": True,
+        "summary": {
+            "total_alerts": len(all_alerts),
+            "critical": len(critical_alerts),
+            "warning": len(warning_alerts),
+            "info": len([a for a in all_alerts if a.get("severity") == "info"]),
+            "channels_checked": len(running_channels),
+        },
+        "alerts": all_alerts,
+        "critical_alerts": critical_alerts,
+        "warning_alerts": warning_alerts,
+    }
 
-        return {
-            "success": True,
-            "summary": {
-                "total_alerts": len(all_alerts),
-                "critical": len(critical_alerts),
-                "warning": len(warning_alerts),
-                "info": len(info_alerts),
-                "channels_checked": len(running_channels),
-            },
-            "alerts": all_alerts,
-            "critical_alerts": critical_alerts,
-            "warning_alerts": warning_alerts,
-        }
 
-    # Analyze alert
-    elif name == "analyze_alert":
-        channel_id = arguments["channel_id"]
-        alert_type_filter = arguments.get("alert_type")
+async def _handle_analyze_alert(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    channel_id = arguments["channel_id"]
+    alert_type_filter = arguments.get("alert_type")
 
-        # Get channel details
-        channel_details = client.get_resource_details(channel_id, "StreamLive")
-        if not channel_details:
-            return {
-                "success": False,
-                "error": f"Channel not found: {channel_id}",
-            }
+    channel_details = await ctx.call(ctx.client.get_resource_details, channel_id, "StreamLive")
+    if not channel_details:
+        return _error_response(f"Channel not found: {channel_id}")
 
-        channel_name = channel_details.get("name", channel_id)
+    channel_name = channel_details.get("name", channel_id)
+    alerts = await ctx.call(get_channel_alerts, ctx.client, channel_id, channel_name)
 
-        # Get current alerts for the channel
-        alerts = get_channel_alerts(client, channel_id, channel_name)
+    if alert_type_filter:
+        alerts = [a for a in alerts if a.get("type") == alert_type_filter]
 
-        # Filter by alert type if specified
-        if alert_type_filter:
-            alerts = [a for a in alerts if a.get("type") == alert_type_filter]
-
-        if not alerts:
-            return {
-                "success": True,
-                "channel_id": channel_id,
-                "channel_name": channel_name,
-                "message": "현재 활성 알람이 없습니다.",
-                "alerts": [],
-            }
-
-        # Get additional context
-        input_status = client.get_channel_input_status(channel_id)
-
-        # Get linked StreamLink flows
-        from app.services.linkage import ResourceHierarchyBuilder
-        resources = client.list_all_resources()
-        hierarchy = ResourceHierarchyBuilder.build_hierarchy(resources)
-
-        linked_flows = []
-        for h in hierarchy:
-            if h["parent"].get("id") == channel_id:
-                linked_flows = h["children"]
-                break
-
-        # Analyze each alert and provide context
-        analyzed_alerts = []
-        for alert in alerts:
-            alert_analysis = _analyze_single_alert(
-                alert=alert,
-                input_status=input_status,
-                linked_flows=linked_flows,
-                client=client,
-            )
-            analyzed_alerts.append(alert_analysis)
-
+    if not alerts:
         return {
             "success": True,
             "channel_id": channel_id,
             "channel_name": channel_name,
-            "total_alerts": len(analyzed_alerts),
-            "analyzed_alerts": analyzed_alerts,
-            "channel_status": {
-                "state": channel_details.get("status"),
-                "active_input": input_status.get("active_input") if input_status else None,
-            },
-            "linked_flows": [
-                {
-                    "id": f.get("id"),
-                    "name": f.get("name"),
-                    "status": f.get("status"),
-                }
-                for f in linked_flows
-            ],
+            "message": "현재 활성 알람이 없습니다.",
+            "alerts": [],
         }
 
-    # Get health summary
-    elif name == "get_health_summary":
-        resources = client.list_all_resources()
+    input_status = await ctx.call(ctx.client.get_channel_input_status, channel_id)
 
-        # Count by service and status
-        streamlive_channels = [r for r in resources if r.get("service") == "StreamLive"]
-        streamlink_flows = [r for r in resources if r.get("service") == "StreamLink"]
+    from app.services.linkage import ResourceHierarchyBuilder
+    resources = await ctx.get_all_resources()
+    hierarchy = ResourceHierarchyBuilder.build_hierarchy(resources)
 
-        running_streamlive = [r for r in streamlive_channels if r.get("status") == "running"]
-        idle_streamlive = [r for r in streamlive_channels if r.get("status") == "idle"]
+    linked_flows = []
+    for h in hierarchy:
+        if h["parent"].get("id") == channel_id:
+            linked_flows = h["children"]
+            break
 
-        running_streamlink = [r for r in streamlink_flows if r.get("status") == "running"]
-        idle_streamlink = [r for r in streamlink_flows if r.get("status") == "idle"]
+    analyzed_alerts = []
+    for alert in alerts:
+        alert_analysis = _analyze_single_alert(
+            alert=alert,
+            input_status=input_status,
+            linked_flows=linked_flows,
+            client=ctx.client,
+        )
+        analyzed_alerts.append(alert_analysis)
 
-        # Get alerts
-        all_alerts = []
-        for channel in running_streamlive:
-            ch_id = channel.get("id", "")
-            ch_name = channel.get("name", "")
-            try:
-                alerts = get_channel_alerts(client, ch_id, ch_name)
-                all_alerts.extend(alerts)
-            except Exception:
-                pass
-
-        critical_alerts = [a for a in all_alerts if a.get("severity") == "critical"]
-        warning_alerts = [a for a in all_alerts if a.get("severity") == "warning"]
-
-        # Determine overall health
-        if critical_alerts:
-            overall_health = "critical"
-            health_message = f"{len(critical_alerts)}개의 심각한 알람이 발생 중입니다. 즉시 확인이 필요합니다."
-        elif warning_alerts:
-            overall_health = "warning"
-            health_message = f"{len(warning_alerts)}개의 주의 알람이 있습니다."
-        elif len(running_streamlive) == 0:
-            overall_health = "idle"
-            health_message = "실행 중인 채널이 없습니다."
-        else:
-            overall_health = "healthy"
-            health_message = "모든 시스템이 정상 작동 중입니다."
-
-        # Build issues list
-        issues = []
-        for alert in critical_alerts:
-            issues.append({
-                "severity": "critical",
-                "channel": alert.get("channel_name"),
-                "issue": alert.get("type"),
-                "pipeline": alert.get("pipeline"),
-            })
-        for alert in warning_alerts:
-            issues.append({
-                "severity": "warning",
-                "channel": alert.get("channel_name"),
-                "issue": alert.get("type"),
-                "pipeline": alert.get("pipeline"),
-            })
-
-        return {
-            "success": True,
-            "overall_health": overall_health,
-            "health_message": health_message,
-            "summary": {
-                "streamlive_total": len(streamlive_channels),
-                "streamlive_running": len(running_streamlive),
-                "streamlive_idle": len(idle_streamlive),
-                "streamlink_total": len(streamlink_flows),
-                "streamlink_running": len(running_streamlink),
-                "streamlink_idle": len(idle_streamlink),
-                "total_alerts": len(all_alerts),
-                "critical_alerts": len(critical_alerts),
-                "warning_alerts": len(warning_alerts),
-            },
-            "issues": issues,
-            "running_channels": [
-                {
-                    "id": ch.get("id"),
-                    "name": ch.get("name"),
-                    "status": ch.get("status"),
-                }
-                for ch in running_streamlive
-            ],
-        }
-
-    # Get full status (integrated)
-    elif name == "get_full_status":
-        channel_id = arguments["channel_id"]
-        
-        # Get StreamLive channel status
-        channel_status = client.get_channel_input_status(channel_id)
-        if not channel_status:
-            return {
-                "success": False,
-                "error": f"StreamLive channel not found: {channel_id}",
+    return {
+        "success": True,
+        "channel_id": channel_id,
+        "channel_name": channel_name,
+        "total_alerts": len(analyzed_alerts),
+        "analyzed_alerts": analyzed_alerts,
+        "channel_status": {
+            "state": channel_details.get("status"),
+            "active_input": input_status.get("active_input") if input_status else None,
+        },
+        "linked_flows": [
+            {
+                "id": f.get("id"),
+                "name": f.get("name"),
+                "status": f.get("status"),
             }
-        
-        result = {
-            "success": True,
-            "streamlive": channel_status,
-        }
-        
-        # Get StreamPackage status if connected
-        streampackage_id = channel_status.get("streampackage_verification", {}).get("streampackage_id")
-        if streampackage_id:
-            sp_status = client.get_streampackage_channel_details(streampackage_id)
-            if sp_status:
-                result["streampackage"] = sp_status
-        
-        # Get CSS status if available
-        css_verification = channel_status.get("css_verification")
-        if css_verification:
-            result["css"] = css_verification
-        
-        # Get linked StreamLink flows
-        from app.services.linkage import ResourceHierarchyBuilder
-        resources = client.list_all_resources()
-        hierarchy = ResourceHierarchyBuilder.build_hierarchy(resources)
+            for f in linked_flows
+        ],
+    }
 
-        for h in hierarchy:
-            if h["parent"].get("id") == channel_id:
-                result["linked_streamlink_flows"] = h["children"]
-                break
 
-        return result
-    
-    # Get channel logs
-    elif name == "get_channel_logs":
-        channel_id = arguments["channel_id"]
-        hours = arguments.get("hours", 24)
-        event_types = arguments.get("event_types")
-        
-        logs = client.get_streamlive_channel_logs(
-            channel_id=channel_id,
-            hours=hours,
-            event_types=event_types,
-        )
-        
-        return {
-            "success": True,
-            "channel_id": channel_id,
-            "hours": hours,
-            "total_logs": len(logs),
-            "logs": logs,
-        }
-    
-    # Get integrated logs
-    elif name == "get_integrated_logs":
-        channel_id = arguments["channel_id"]
-        hours = arguments.get("hours", 24)
-        services = arguments.get("services")
-        event_types = arguments.get("event_types")
-        
-        result = client.get_integrated_logs(
-            channel_id=channel_id,
-            hours=hours,
-            services=services,
-            event_types=event_types,
-        )
-        
-        return {
-            "success": True,
-            **result,
-        }
-    
-    # Analyze logs
-    elif name == "analyze_logs":
-        channel_id = arguments["channel_id"]
-        hours = arguments.get("hours", 24)
-        
-        # Get integrated logs
-        logs_data = client.get_integrated_logs(
-            channel_id=channel_id,
-            hours=hours,
-        )
-        
-        if not logs_data or "logs" not in logs_data:
-            return {
-                "success": False,
-                "error": "Could not retrieve logs",
-            }
-        
-        all_logs = logs_data.get("logs", [])
-        service_counts = logs_data.get("service_counts", {})
-        event_counts = logs_data.get("event_counts", {})
-        
-        # Analyze patterns
-        analysis = {
-            "channel_id": channel_id,
-            "analysis_period_hours": hours,
-            "total_events": len(all_logs),
-            "service_distribution": service_counts,
-            "event_distribution": event_counts,
-            "insights": [],
-            "recommendations": [],
-        }
-        
-        # Analyze failover patterns
-        failover_events = [log for log in all_logs if "Failover" in log.get("event_type", "")]
-        recover_events = [log for log in all_logs if "Recover" in log.get("event_type", "")]
-        
-        if failover_events:
-            analysis["insights"].append({
-                "type": "failover_analysis",
-                "failover_count": len(failover_events),
-                "recover_count": len(recover_events),
-                "last_failover": failover_events[0] if failover_events else None,
-                "last_recover": recover_events[0] if recover_events else None,
-            })
-            
-            if len(failover_events) > 3:
-                analysis["recommendations"].append(
-                    f"⚠️ 높은 failover 발생률: {len(failover_events)}회 발생. 입력 소스 상태를 확인하세요."
-                )
-        
-        # Analyze error patterns
-        error_events = [log for log in all_logs if "error" in log.get("event_type", "").lower() or "Error" in log.get("message", "")]
-        if error_events:
-            analysis["insights"].append({
-                "type": "error_analysis",
-                "error_count": len(error_events),
-                "recent_errors": error_events[:5],
-            })
-            
-            analysis["recommendations"].append(
-                f"⚠️ 오류 이벤트 {len(error_events)}개 발견. 상세 로그를 확인하세요."
-            )
-        
-        # Analyze service health
-        service_health = {}
-        for service, count in service_counts.items():
-            if count > 0:
-                service_health[service] = "active"
-            else:
-                service_health[service] = "no_events"
-        
-        analysis["service_health"] = service_health
-        
-        # Time-based analysis
-        if all_logs:
-            from datetime import datetime, timezone
-            now = datetime.now(timezone.utc)
-            
-            recent_logs = [log for log in all_logs[:10]]  # Last 10 events
-            analysis["recent_events"] = recent_logs
-            
-            # Check for gaps in logging
-            if len(all_logs) < 5:
-                analysis["recommendations"].append(
-                    "ℹ️ 로그 이벤트가 적습니다. 정상 작동 중이거나 로그 수집 문제일 수 있습니다."
-                )
-        
-        return {
-            "success": True,
-            **analysis,
-        }
-    
+async def _handle_get_health_summary(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    resources = await ctx.get_all_resources()
+
+    streamlive_channels = [r for r in resources if r.get("service") == "StreamLive"]
+    streamlink_flows = [r for r in resources if r.get("service") == "StreamLink"]
+
+    running_streamlive = [r for r in streamlive_channels if r.get("status") == "running"]
+    idle_streamlive = [r for r in streamlive_channels if r.get("status") == "idle"]
+
+    running_streamlink = [r for r in streamlink_flows if r.get("status") == "running"]
+    idle_streamlink = [r for r in streamlink_flows if r.get("status") == "idle"]
+
+    all_alerts = []
+    for channel in running_streamlive:
+        ch_id = channel.get("id", "")
+        ch_name = channel.get("name", "")
+        try:
+            alerts = await ctx.call(get_channel_alerts, ctx.client, ch_id, ch_name)
+            all_alerts.extend(alerts)
+        except Exception:
+            pass
+
+    critical_alerts = [a for a in all_alerts if a.get("severity") == "critical"]
+    warning_alerts = [a for a in all_alerts if a.get("severity") == "warning"]
+
+    if critical_alerts:
+        overall_health = "critical"
+        health_message = f"{len(critical_alerts)}개의 심각한 알람이 발생 중입니다. 즉시 확인이 필요합니다."
+    elif warning_alerts:
+        overall_health = "warning"
+        health_message = f"{len(warning_alerts)}개의 주의 알람이 있습니다."
+    elif len(running_streamlive) == 0:
+        overall_health = "idle"
+        health_message = "실행 중인 채널이 없습니다."
     else:
-        raise ValueError(f"Unknown tool: {name}")
+        overall_health = "healthy"
+        health_message = "모든 시스템이 정상 작동 중입니다."
+
+    issues = []
+    for alert in critical_alerts:
+        issues.append({
+            "severity": "critical",
+            "channel": alert.get("channel_name"),
+            "issue": alert.get("type"),
+            "pipeline": alert.get("pipeline"),
+        })
+    for alert in warning_alerts:
+        issues.append({
+            "severity": "warning",
+            "channel": alert.get("channel_name"),
+            "issue": alert.get("type"),
+            "pipeline": alert.get("pipeline"),
+        })
+
+    return {
+        "success": True,
+        "overall_health": overall_health,
+        "health_message": health_message,
+        "summary": {
+            "streamlive_total": len(streamlive_channels),
+            "streamlive_running": len(running_streamlive),
+            "streamlive_idle": len(idle_streamlive),
+            "streamlink_total": len(streamlink_flows),
+            "streamlink_running": len(running_streamlink),
+            "streamlink_idle": len(idle_streamlink),
+            "total_alerts": len(all_alerts),
+            "critical_alerts": len(critical_alerts),
+            "warning_alerts": len(warning_alerts),
+        },
+        "issues": issues,
+        "running_channels": [
+            {
+                "id": ch.get("id"),
+                "name": ch.get("name"),
+                "status": ch.get("status"),
+            }
+            for ch in running_streamlive
+        ],
+    }
+
+
+async def _handle_get_full_status(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    channel_id = arguments["channel_id"]
+
+    channel_status = await ctx.call(ctx.client.get_channel_input_status, channel_id)
+    if not channel_status:
+        return _error_response(f"StreamLive channel not found: {channel_id}")
+
+    result = {
+        "success": True,
+        "streamlive": channel_status,
+    }
+
+    streampackage_id = channel_status.get("streampackage_verification", {}).get("streampackage_id")
+    if streampackage_id:
+        sp_status = await ctx.call(ctx.client.get_streampackage_channel_details, streampackage_id)
+        if sp_status:
+            result["streampackage"] = sp_status
+
+    css_verification = channel_status.get("css_verification")
+    if css_verification:
+        result["css"] = css_verification
+
+    from app.services.linkage import ResourceHierarchyBuilder
+    resources = await ctx.get_all_resources()
+    hierarchy = ResourceHierarchyBuilder.build_hierarchy(resources)
+
+    for h in hierarchy:
+        if h["parent"].get("id") == channel_id:
+            result["linked_streamlink_flows"] = h["children"]
+            break
+
+    return result
+
+
+async def _handle_get_channel_logs(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    channel_id = arguments["channel_id"]
+    hours = arguments.get("hours", 24)
+    event_types = arguments.get("event_types")
+
+    logs = await ctx.call(
+        ctx.client.get_streamlive_channel_logs,
+        channel_id=channel_id,
+        hours=hours,
+        event_types=event_types,
+    )
+
+    return {
+        "success": True,
+        "channel_id": channel_id,
+        "hours": hours,
+        "total_logs": len(logs),
+        "logs": logs,
+    }
+
+
+async def _handle_get_integrated_logs(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    channel_id = arguments["channel_id"]
+    hours = arguments.get("hours", 24)
+    services = arguments.get("services")
+    event_types = arguments.get("event_types")
+
+    result = await ctx.call(
+        ctx.client.get_integrated_logs,
+        channel_id=channel_id,
+        hours=hours,
+        services=services,
+        event_types=event_types,
+    )
+
+    return {
+        "success": True,
+        **result,
+    }
+
+
+async def _handle_analyze_logs(ctx: ToolContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    channel_id = arguments["channel_id"]
+    hours = arguments.get("hours", 24)
+
+    logs_data = await ctx.call(
+        ctx.client.get_integrated_logs,
+        channel_id=channel_id,
+        hours=hours,
+    )
+
+    if not logs_data or "logs" not in logs_data:
+        return _error_response("Could not retrieve logs")
+
+    all_logs = logs_data.get("logs", [])
+    service_counts = logs_data.get("service_counts", {})
+    event_counts = logs_data.get("event_counts", {})
+
+    analysis = {
+        "channel_id": channel_id,
+        "analysis_period_hours": hours,
+        "total_events": len(all_logs),
+        "service_distribution": service_counts,
+        "event_distribution": event_counts,
+        "insights": [],
+        "recommendations": [],
+    }
+
+    failover_events = [log for log in all_logs if "Failover" in log.get("event_type", "")]
+    recover_events = [log for log in all_logs if "Recover" in log.get("event_type", "")]
+
+    if failover_events:
+        analysis["insights"].append({
+            "type": "failover_analysis",
+            "failover_count": len(failover_events),
+            "recover_count": len(recover_events),
+            "last_failover": failover_events[0] if failover_events else None,
+            "last_recover": recover_events[0] if recover_events else None,
+        })
+
+        if len(failover_events) > 3:
+            analysis["recommendations"].append(
+                f"⚠️ 높은 failover 발생률: {len(failover_events)}회 발생. 입력 소스 상태를 확인하세요."
+            )
+
+    error_events = [
+        log for log in all_logs
+        if "error" in log.get("event_type", "").lower() or "Error" in log.get("message", "")
+    ]
+    if error_events:
+        analysis["insights"].append({
+            "type": "error_analysis",
+            "error_count": len(error_events),
+            "recent_errors": error_events[:5],
+        })
+        analysis["recommendations"].append(
+            f"⚠️ 오류 이벤트 {len(error_events)}개 발견. 상세 로그를 확인하세요."
+        )
+
+    service_health = {}
+    for service, count in service_counts.items():
+        service_health[service] = "active" if count > 0 else "no_events"
+
+    analysis["service_health"] = service_health
+
+    if all_logs:
+        analysis["recent_events"] = [log for log in all_logs[:10]]
+        if len(all_logs) < 5:
+            analysis["recommendations"].append(
+                "ℹ️ 로그 이벤트가 적습니다. 정상 작동 중이거나 로그 수집 문제일 수 있습니다."
+            )
+
+    return {
+        "success": True,
+        **analysis,
+    }

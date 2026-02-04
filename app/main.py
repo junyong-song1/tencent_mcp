@@ -5,6 +5,7 @@ It integrates FastAPI for REST APIs with Slack Bolt for Slack interactions.
 """
 import asyncio
 import logging
+import os
 import threading
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -21,11 +22,34 @@ from app.services.scheduler import SchedulerService
 from app.services.notification import NotificationService, init_notification_service
 from app.services.alert_monitor import AlertMonitorService, init_alert_monitor
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+def _configure_logging() -> None:
+    """Configure logging with daily rotation for app.log."""
+    from logging.handlers import TimedRotatingFileHandler
+
+    log_file = os.environ.get("APP_LOG_FILE", "logs/app.log")
+    log_level = logging.DEBUG if os.environ.get("DEBUG") == "1" else logging.INFO
+    log_dir = os.path.dirname(log_file)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+
+    file_handler = TimedRotatingFileHandler(
+        log_file,
+        when="midnight",
+        interval=1,
+        backupCount=7,
+        encoding="utf-8",
+    )
+    file_handler.suffix = "%Y-%m-%d"
+
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[file_handler, logging.StreamHandler()],
+        force=True,
+    )
+
+
+_configure_logging()
 logger = logging.getLogger(__name__)
 
 # Global instances

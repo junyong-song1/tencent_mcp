@@ -39,8 +39,8 @@ fi
 
 echo "🚀 Starting Tencent MCP Server (FastAPI)..."
 
-# Start FastAPI with uvicorn
-nohup python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > app.log 2>&1 &
+# Start FastAPI with uvicorn (logging handled by app)
+nohup python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > /dev/null 2>&1 &
 
 sleep 2
 

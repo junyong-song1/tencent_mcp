@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import threading
+import time
 
 from slack_bolt import App
 
@@ -14,28 +15,38 @@ logger = logging.getLogger(__name__)
 def register(app: App, services):
     """Register dashboard action handlers."""
 
+    def _parse_private_metadata(view: dict) -> tuple:
+        """Parse private metadata JSON safely."""
+        private_metadata = view.get("private_metadata", "")
+        metadata = {}
+        if private_metadata:
+            try:
+                metadata = json.loads(private_metadata)
+            except (json.JSONDecodeError, TypeError):
+                metadata = {}
+        return metadata, private_metadata
+
     def extract_modal_filter_state(view: dict) -> dict:
         """Extract filter state from modal view."""
         filters = view.get("state", {}).get("values", {}).get("dashboard_filters", {})
         search_block = view.get("state", {}).get("values", {}).get("search_block", {})
 
-        private_metadata = view.get("private_metadata", "")
         channel_id = ""
         page = 0
 
-        try:
-            metadata = json.loads(private_metadata)
+        metadata, private_metadata = _parse_private_metadata(view)
+        if metadata:
             channel_id = metadata.get("channel_id", "")
             page = metadata.get("page", 0)
-
-            if isinstance(channel_id, str) and channel_id.strip().startswith("{"):
-                try:
-                    nested = json.loads(channel_id)
-                    channel_id = nested.get("channel_id", channel_id)
-                except (json.JSONDecodeError, TypeError):
-                    pass
-        except (json.JSONDecodeError, TypeError):
+        else:
             channel_id = private_metadata
+
+        if isinstance(channel_id, str) and channel_id.strip().startswith("{"):
+            try:
+                nested = json.loads(channel_id)
+                channel_id = nested.get("channel_id", channel_id)
+            except (json.JSONDecodeError, TypeError):
+                pass
 
         service_filter = "all"
         status_filter = "all"
@@ -107,6 +118,40 @@ def register(app: App, services):
                     pass
 
         threading.Thread(target=_update, daemon=True).start()
+
+    def _poll_streamlink_status(
+        resource_id: str,
+        desired_status: str,
+        attempts: int = 5,
+        interval_seconds: float = 2.0,
+    ):
+        """Poll StreamLink flow status with bounded retries."""
+        last_status = None
+        last_resources = []
+        for attempt in range(attempts):
+            try:
+                services.tencent_client.clear_cache()
+                resources = services.tencent_client.list_all_resources()
+                last_resources = resources
+            except Exception as e:
+                logger.warning(f"Failed to refresh resources while polling: {e}")
+                resources = []
+
+            for resource in resources:
+                if (
+                    resource.get("service") == "StreamLink"
+                    and resource.get("id") == resource_id
+                ):
+                    last_status = resource.get("status")
+                    break
+
+            if last_status == desired_status:
+                return last_resources, last_status
+
+            if attempt < attempts - 1:
+                time.sleep(interval_seconds)
+
+        return last_resources, last_status
 
     @app.action("dashboard_search_input")
     def handle_search_input(ack, body, client, logger):
@@ -276,20 +321,17 @@ def register(app: App, services):
         filters = view.get("state", {}).get("values", {}).get("streamlink_only_filters", {})
         search_block = view.get("state", {}).get("values", {}).get("streamlink_only_search_block", {})
 
-        private_metadata = view.get("private_metadata", "")
         channel_id = ""
         page = 0
         status_filter = "all"
         keyword = ""
 
-        try:
-            metadata = json.loads(private_metadata)
+        metadata, _ = _parse_private_metadata(view)
+        if metadata:
             channel_id = metadata.get("channel_id", "")
             page = metadata.get("page", 0)
             status_filter = metadata.get("status_filter", "all")
             keyword = metadata.get("keyword", "")
-        except (json.JSONDecodeError, TypeError):
-            pass
 
         # Override with current UI state
         if "streamlink_only_filter_status" in filters:
@@ -501,13 +543,10 @@ def register(app: App, services):
                 result = services.tencent_client.start_streamlink_input(resource_id)
                 logger.info(f"StreamLink flow started: {resource_id}, result: {result}")
 
-                # Wait for status to stabilize
-                import time
-                time.sleep(8)
-
-                # Clear cache and refresh
-                services.tencent_client.clear_cache()
-                all_resources = services.tencent_client.list_all_resources()
+                # Poll for status to stabilize (bounded retries)
+                all_resources, _ = _poll_streamlink_status(resource_id, "running")
+                if not all_resources:
+                    all_resources = services.tencent_client.list_all_resources()
                 hierarchy = ResourceHierarchyBuilder.build_hierarchy(all_resources)
 
                 # Build failover map (to show failover status after action)
@@ -584,13 +623,10 @@ def register(app: App, services):
                 result = services.tencent_client.stop_streamlink_input(resource_id)
                 logger.info(f"StreamLink flow stopped: {resource_id}, result: {result}")
 
-                # Wait for status to stabilize
-                import time
-                time.sleep(8)
-
-                # Clear cache and refresh
-                services.tencent_client.clear_cache()
-                all_resources = services.tencent_client.list_all_resources()
+                # Poll for status to stabilize (bounded retries)
+                all_resources, _ = _poll_streamlink_status(resource_id, "stopped")
+                if not all_resources:
+                    all_resources = services.tencent_client.list_all_resources()
                 hierarchy = ResourceHierarchyBuilder.build_hierarchy(all_resources)
 
                 # Build failover map (to show failover status after action)

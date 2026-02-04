@@ -33,8 +33,8 @@ if [ -f .env ]; then
     PORT=${PORT:-8000}
 fi
 
-# Start FastAPI with uvicorn
-nohup python3 -m uvicorn app.main:app --host 0.0.0.0 --port $PORT > app.log 2>&1 &
+# Start FastAPI with uvicorn (logging handled by app)
+nohup python3 -m uvicorn app.main:app --host 0.0.0.0 --port $PORT > /dev/null 2>&1 &
 
 echo "✅ Server started on http://localhost:$PORT"
 echo "📄 Check app.log for details"
